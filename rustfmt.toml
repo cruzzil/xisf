@@ -1,0 +1,3 @@
+# 100 columns, matching the convention the XISF spec examples use.
+max_width = 100
+use_small_heuristics = "Max"

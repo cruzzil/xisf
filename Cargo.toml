@@ -2,9 +2,6 @@
 resolver = "3"
 members = [
     "crates/xisf-core",
-    "crates/xisf",
-    "crates/xisf-c",
-    "crates/xisf-cli",
 ]
 
 [workspace.package]

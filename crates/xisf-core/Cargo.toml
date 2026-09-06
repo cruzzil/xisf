@@ -1,0 +1,29 @@
+[package]
+name = "xisf-core"
+description = "Core engine for reading and writing XISF (Extensible Image Serialization Format) files"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+quick-xml.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+memmap2.workspace = true
+flate2 = { workspace = true, optional = true }
+lz4_flex = { workspace = true, optional = true }
+sha1 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+sha3 = { workspace = true, optional = true }
+
+[features]
+default = ["zlib", "lz4", "checksums"]
+zlib = ["dep:flate2"]
+lz4 = ["dep:lz4_flex"]
+checksums = ["dep:sha1", "dep:sha2", "dep:sha3"]
+
+[lints]
+workspace = true
