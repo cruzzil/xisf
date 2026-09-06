@@ -309,11 +309,15 @@ mod tests {
 
     #[test]
     fn reads_an_attached_block() {
-        let xml = r#"<xisf version="1.0"><Image location="attachment:64:3"/></xisf>"#;
-        let mut trailing = vec![0u8; 64];
+        // The offset is absolute in the file, so it has to clear the preamble
+        // and the header rather than being counted from the data.
+        const AT: usize = 256;
+        let xml = format!(r#"<xisf version="1.0"><Image location="attachment:{AT}:3"/></xisf>"#);
+        let padding = AT - (crate::layout::PREAMBLE_LEN + xml.len());
+        let mut trailing = vec![0u8; padding];
         trailing.extend_from_slice(b"XYZ");
-        let bytes = build(xml, &trailing[16 + xml.len()..]);
-        let reader = Reader::from_bytes(bytes).unwrap();
+
+        let reader = Reader::from_bytes(build(&xml, &trailing)).unwrap();
         let image = reader.header().images()[0];
         assert_eq!(&*reader.block(&image.data).unwrap(), b"XYZ");
     }

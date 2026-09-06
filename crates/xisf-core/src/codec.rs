@@ -20,7 +20,7 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     let size = usize::try_from(compression.uncompressed_size)
         .map_err(|_| err!(Unsupported, "the block is too large for this platform"))?;
 
-    let plain = decompress(stored, compression.codec, size)?;
+    let plain = decompress(stored, &compression.codec, size)?;
     if plain.len() != size {
         return Err(err!(
             Compression,
@@ -39,7 +39,7 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     }
 }
 
-fn decompress(stored: &[u8], codec: Codec, size: usize) -> Result<Vec<u8>> {
+fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
     match codec {
         #[cfg(feature = "zlib")]
         Codec::Zlib => {
@@ -56,8 +56,10 @@ fn decompress(stored: &[u8], codec: Codec, size: usize) -> Result<Vec<u8>> {
         Codec::Lz4 | Codec::Lz4Hc => {
             lz4_flex::block::decompress(stored, size).map_err(|e| err!(Compression, "lz4: {e}"))
         }
+        #[cfg(feature = "zstd")]
+        Codec::Zstd => zstd::stream::decode_all(stored).map_err(|e| err!(Compression, "zstd: {e}")),
         #[allow(unreachable_patterns)]
-        other => Err(err!(Unsupported, "{} support is not compiled in", other.name())),
+        other => Err(err!(Unsupported, "cannot decode {} blocks", other.name())),
     }
 }
 

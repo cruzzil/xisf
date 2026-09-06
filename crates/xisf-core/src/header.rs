@@ -255,7 +255,7 @@ mod tests {
         let image = parse(xml).unwrap();
         let image = image.images()[0];
         assert_eq!(image.data.location, Some(Location::Attachment { position: 9869, size: 23042 }));
-        let compression = image.data.compression.unwrap();
+        let compression = image.data.compression.clone().unwrap();
         assert_eq!(compression.codec, Codec::Zlib);
         assert_eq!(compression.uncompressed_size, 30000);
         assert_eq!(compression.shuffle_item_size, Some(4));

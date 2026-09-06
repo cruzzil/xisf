@@ -102,8 +102,8 @@ impl Location {
     }
 }
 
-/// A compression codec, and whether byte shuffling was applied.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// A compression codec.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Codec {
     /// RFC 1950 zlib.
     Zlib,
@@ -111,20 +111,39 @@ pub enum Codec {
     Lz4,
     /// LZ4 block format, high-compression encoder. Decodes as [`Codec::Lz4`].
     Lz4Hc,
+    /// Zstandard. Not among XISF 1.0's standard codecs, but libXISF writes
+    /// it, so it is read here.
+    Zstd,
+    /// A codec this build cannot decode, kept by name.
+    ///
+    /// XISF 1.0 names zlib, LZ4 and LZ4HC as its standard codecs, but an
+    /// encoder may write others -- libXISF writes ZSTD. A file containing one
+    /// such block is still a readable file: its header parses, its other
+    /// blocks decode, and only *this* block fails, at the point something
+    /// asks for its bytes. Refusing the whole file at parse time would make
+    /// its metadata unreachable for no reason.
+    Other(String),
 }
 
 impl Codec {
-    pub fn name(self) -> &'static str {
+    pub fn name(&self) -> &str {
         match self {
             Codec::Zlib => "zlib",
             Codec::Lz4 => "lz4",
             Codec::Lz4Hc => "lz4hc",
+            Codec::Zstd => "zstd",
+            Codec::Other(name) => name,
         }
+    }
+
+    /// Whether this build can decode the codec.
+    pub fn is_supported(&self) -> bool {
+        !matches!(self, Codec::Other(_))
     }
 }
 
 /// A parsed `compression` attribute.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Compression {
     pub codec: Codec,
     /// The size the block decompresses to. The spec requires it, so a decoder
@@ -158,7 +177,8 @@ impl Compression {
             "zlib" => Codec::Zlib,
             "lz4" => Codec::Lz4,
             "lz4hc" => Codec::Lz4Hc,
-            other => return Err(err!(Unsupported, "unknown compression codec {other:?}")),
+            "zstd" => Codec::Zstd,
+            other => Codec::Other(other.to_string()),
         };
 
         let uncompressed_size = fields

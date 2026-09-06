@@ -61,7 +61,7 @@ fn reads_a_shuffled_zlib_image_and_verifies_its_checksum() {
     let reader = open("Sample_F32_ZlibCompression_Sha256Security.xisf");
     let image = reader.header().images()[0];
 
-    let compression = image.data.compression.expect("compression");
+    let compression = image.data.compression.clone().expect("compression");
     assert_eq!(compression.codec, Codec::Zlib);
     assert_eq!(
         compression.shuffle_item_size,
