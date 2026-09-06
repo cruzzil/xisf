@@ -34,7 +34,7 @@ use xisf_core::reader::ChecksumStatus;
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::image::{Bounds, ColorSpace, Image, PixelStorage, SampleFormat};
-pub use xisf_core::property::{PropertyType, Scalar, Shape};
+pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
 pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
 
 /// An open XISF file.
@@ -67,7 +67,35 @@ impl XisfFile {
             .collect()
     }
 
-    /// The file's `XISF:`-namespaced metadata properties, as text.
+    /// The file's properties, wherever in the header they appear.
+    ///
+    /// Includes those under `<Metadata>`, those attached to an image, and any
+    /// standalone ones, because the distinction matters to a writer far more
+    /// than to a caller asking what a file contains.
+    pub fn properties(&self) -> Vec<PropertyRef<'_>> {
+        self.reader
+            .header()
+            .root
+            .descendants()
+            .into_iter()
+            .filter(|e| e.name == "Property")
+            .filter_map(|element| {
+                Property::parse(element).ok().map(|property| PropertyRef {
+                    file: self,
+                    element,
+                    property,
+                })
+            })
+            .collect()
+    }
+
+    /// The property with a given identifier, if the file has one.
+    pub fn property(&self, id: &str) -> Option<PropertyRef<'_>> {
+        self.properties().into_iter().find(|p| p.id() == id)
+    }
+
+    /// The file's properties as plain text, for the ones that have a textual
+    /// form. A vector or matrix has none and is skipped.
     pub fn metadata(&self) -> Vec<(String, String)> {
         self.reader
             .header()
@@ -210,6 +238,107 @@ impl<'a> ImageRef<'a> {
     /// Where the image's data lives, for callers that care.
     pub fn location(&self) -> Option<&Location> {
         self.element.data.location.as_ref()
+    }
+}
+
+/// One property in a file.
+#[derive(Debug)]
+pub struct PropertyRef<'a> {
+    file: &'a XisfFile,
+    element: &'a Element,
+    property: Property,
+}
+
+impl<'a> PropertyRef<'a> {
+    /// The property's identifier, possibly namespaced.
+    pub fn id(&self) -> &str {
+        &self.property.id
+    }
+
+    /// The declared type.
+    pub fn kind(&self) -> PropertyType {
+        self.property.kind
+    }
+
+    /// The parsed attributes.
+    pub fn attributes(&self) -> &Property {
+        &self.property
+    }
+
+    /// The value as text, for a scalar, string or `TimePoint`.
+    ///
+    /// `None` for a vector, matrix or table, whose value is binary and has no
+    /// textual form -- use [`bytes`](PropertyRef::bytes) or
+    /// [`read`](PropertyRef::read) for those.
+    pub fn as_str(&self) -> Option<&str> {
+        match self.property.kind.shape {
+            Shape::Scalar | Shape::TimePoint => self.property.value.as_deref(),
+            Shape::String => {
+                // A string is usually character data, but a long one may be
+                // held in a data block instead, in which case there is no
+                // text here to hand back.
+                self.property.value.as_deref().or(self.property.text.as_deref())
+            }
+            _ => None,
+        }
+    }
+
+    /// The property's data block, decompressed, if it has one.
+    pub fn bytes(&self) -> Result<Cow<'a, [u8]>> {
+        if self.element.data.location.is_none() {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("property {:?} has no data block", self.property.id),
+            ));
+        }
+        self.file.reader.block(&self.element.data)
+    }
+
+    /// Read a vector or matrix property's components as `T`.
+    ///
+    /// `T` must be the property's own element type; this converts byte order,
+    /// not element types, for the same reason [`ImageRef::read`] does not.
+    pub fn read<T: Sample>(&self) -> Result<Vec<T>> {
+        let element = self.property.kind.element.ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                format!("property {:?} has no element type to read", self.property.id),
+            )
+        })?;
+        if element.name() != T::FORMAT.name() {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "property {:?} holds {} components; asked for {}",
+                    self.property.id,
+                    element.name(),
+                    T::FORMAT.name()
+                ),
+            ));
+        }
+
+        let expected = self.property.data_size().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                format!(
+                    "property {:?} declares a shape this platform cannot hold",
+                    self.property.id
+                ),
+            )
+        })?;
+        let bytes = self.bytes()?;
+        if bytes.len() as u64 != expected {
+            return Err(Error::new(
+                ErrorKind::Truncated,
+                format!(
+                    "property {:?} declares {expected} bytes but its block holds {}",
+                    self.property.id,
+                    bytes.len()
+                ),
+            ));
+        }
+
+        Ok(T::decode(&bytes, self.element.data.byte_order))
     }
 }
 

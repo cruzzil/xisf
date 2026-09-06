@@ -150,21 +150,49 @@ fn info(options: &Options) -> Result<ExitCode, String> {
             }
         }
 
-        let metadata = file.metadata();
-        if !metadata.is_empty() {
+        let properties = file.properties();
+        if !properties.is_empty() {
             println!(
                 "  {} propert{}",
-                metadata.len(),
-                if metadata.len() == 1 { "y" } else { "ies" }
+                properties.len(),
+                if properties.len() == 1 { "y" } else { "ies" }
             );
             if options.verbose {
-                for (id, value) in &metadata {
-                    println!("       {id} = {value}");
+                for property in &properties {
+                    println!(
+                        "       {} ({}) = {}",
+                        property.id(),
+                        property.kind().name(),
+                        describe(property)
+                    );
                 }
             }
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// A one-line rendering of a property's value.
+///
+/// A vector or matrix has no textual form, and a long string may be a data
+/// block rather than character data -- one file in the corpus carries several
+/// kilobytes of base64 processing history. Printing those in full turns `info`
+/// into a dump, so their shape is shown instead and `xisf dump` is there for
+/// anyone who wants the bytes.
+fn describe(property: &xisf::PropertyRef<'_>) -> String {
+    const LIMIT: usize = 80;
+
+    match property.as_str() {
+        Some(text) if text.chars().count() <= LIMIT => text.to_string(),
+        Some(text) => {
+            let head: String = text.chars().take(LIMIT).collect();
+            format!("{head}... ({} characters)", text.chars().count())
+        }
+        None => property
+            .attributes()
+            .component_count()
+            .map_or_else(|| "<binary>".to_string(), |n| format!("<{n} components>")),
+    }
 }
 
 fn header(options: &Options) -> Result<ExitCode, String> {

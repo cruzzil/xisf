@@ -242,6 +242,109 @@ fn prefix_for(scalar: Scalar) -> &'static str {
     }
 }
 
+/// A `<Property>` element, parsed.
+///
+/// The value itself is deliberately *not* decoded here. A scalar lives in the
+/// `value` attribute and a string in the character data, but a vector or
+/// matrix lives in a data block that only a reader can fetch -- so this
+/// records what the property is and where its value is, and leaves getting it
+/// to whoever holds the file.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Property {
+    /// The `id` attribute: the property's name, possibly namespaced.
+    pub id: String,
+    pub kind: PropertyType,
+    /// The `value` attribute, for scalar and `TimePoint` properties.
+    pub value: Option<String>,
+    /// Character data, for `String` properties held inline.
+    pub text: Option<String>,
+    /// A vector's component count, from the `length` attribute.
+    pub length: Option<u64>,
+    /// A matrix's dimensions, from `rows` and `columns`.
+    pub rows: Option<u64>,
+    pub columns: Option<u64>,
+    /// The `format` specifier, which affects only how a value is *printed*.
+    pub format: Option<String>,
+    pub comment: Option<String>,
+}
+
+impl Property {
+    /// Parse a `<Property>` element's attributes.
+    pub fn parse(element: &crate::header::Element) -> Result<Self> {
+        if element.name != "Property" {
+            return Err(err!(InvalidArgument, "expected <Property>, got <{}>", element.name));
+        }
+        let id = element
+            .attr("id")
+            .ok_or_else(|| err!(BadHeader, "a <Property> has no id"))?
+            .to_string();
+        let kind = element
+            .attr("type")
+            .ok_or_else(|| err!(BadHeader, "<Property id={id:?}> has no type"))
+            .and_then(PropertyType::parse)?;
+
+        let number = |name: &str| -> Result<Option<u64>> {
+            match element.attr(name) {
+                None => Ok(None),
+                Some(text) => text.trim().parse::<u64>().map(Some).map_err(|_| {
+                    err!(BadAttribute, "a <Property> has a non-numeric {name}: {text:?}")
+                }),
+            }
+        };
+
+        let property = Property {
+            id,
+            kind,
+            value: element.attr("value").map(str::to_owned),
+            text: element.data.text.clone(),
+            length: number("length")?,
+            rows: number("rows")?,
+            columns: number("columns")?,
+            format: element.attr("format").map(str::to_owned),
+            comment: element.attr("comment").map(str::to_owned),
+        };
+        property.check_shape()?;
+        Ok(property)
+    }
+
+    /// How many components the value has, where that is knowable from the
+    /// header alone.
+    ///
+    /// `None` for scalars and strings, whose length is not a separate
+    /// attribute.
+    pub fn component_count(&self) -> Option<u64> {
+        match self.kind.shape {
+            Shape::Vector => self.length,
+            Shape::Matrix => self.rows.zip(self.columns).and_then(|(r, c)| r.checked_mul(c)),
+            _ => None,
+        }
+    }
+
+    /// The size the value's data block should be, in bytes.
+    pub fn data_size(&self) -> Option<u64> {
+        let count = self.component_count()?;
+        let width = self.kind.element?.size()? as u64;
+        count.checked_mul(width)
+    }
+
+    /// A vector must state its length and a matrix its dimensions; without
+    /// them the block cannot be interpreted, and guessing from the block's
+    /// size would silently accept a truncated file.
+    fn check_shape(&self) -> Result<()> {
+        match self.kind.shape {
+            Shape::Vector if self.length.is_none() => {
+                Err(err!(BadHeader, "<Property id={:?}> is a vector with no length", self.id))
+            }
+            Shape::Matrix if self.rows.is_none() || self.columns.is_none() => Err(err!(
+                BadHeader,
+                "<Property id={:?}> is a matrix without both rows and columns",
+                self.id
+            )),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +450,71 @@ mod tests {
         assert_eq!(Scalar::Complex128.size(), Some(32), "two Float128 components");
         assert_eq!(Scalar::Float128.size(), Some(16));
         assert_eq!(Scalar::Boolean.size(), None, "serialised as text, not a fixed width");
+    }
+
+    fn property_of(attrs: &str, text: &str) -> Result<Property> {
+        let xml = format!(r#"<xisf version="1.0"><Property {attrs}>{text}</Property></xisf>"#);
+        let header = crate::header::parse(&xml)?;
+        Property::parse(&header.root.children[0])
+    }
+
+    #[test]
+    fn a_scalar_property_carries_its_value_in_an_attribute() {
+        let p = property_of(r#"id="FocalDistance" type="UInt32" value="2540""#, "").unwrap();
+        assert_eq!(p.id, "FocalDistance");
+        assert_eq!(p.kind.shape, Shape::Scalar);
+        assert_eq!(p.kind.element, Some(Scalar::UInt32));
+        assert_eq!(p.value.as_deref(), Some("2540"));
+        assert_eq!(p.component_count(), None, "a scalar has no component count");
+    }
+
+    #[test]
+    fn a_string_property_carries_its_value_as_character_data() {
+        let p = property_of(r#"id="Instrument:Name" type="String""#, "SBIG STF-8300M").unwrap();
+        assert_eq!(p.text.as_deref(), Some("SBIG STF-8300M"));
+        assert_eq!(p.kind.shape, Shape::String);
+    }
+
+    #[test]
+    fn a_vector_states_its_length_and_a_matrix_its_dimensions() {
+        let v = property_of(r#"id="v" type="F64Vector" length="1000""#, "").unwrap();
+        assert_eq!(v.component_count(), Some(1000));
+        assert_eq!(v.data_size(), Some(8000));
+
+        let m = property_of(r#"id="m" type="F32Matrix" rows="100" columns="25""#, "").unwrap();
+        assert_eq!(m.component_count(), Some(2500));
+        assert_eq!(m.data_size(), Some(10_000));
+    }
+
+    /// Without the shape attributes the block cannot be interpreted, and
+    /// inferring it from the block's size would quietly accept a truncated
+    /// file as a shorter vector.
+    #[test]
+    fn an_aggregate_without_its_shape_is_refused() {
+        assert!(property_of(r#"id="v" type="F64Vector""#, "").is_err());
+        assert!(property_of(r#"id="m" type="F32Matrix" rows="10""#, "").is_err());
+        assert!(property_of(r#"id="m" type="F32Matrix" columns="10""#, "").is_err());
+        assert!(property_of(r#"id="v" type="F64Vector" length="wat""#, "").is_err());
+    }
+
+    #[test]
+    fn a_property_needs_an_id_and_a_type() {
+        assert!(property_of(r#"type="UInt32" value="1""#, "").is_err());
+        assert!(property_of(r#"id="x" value="1""#, "").is_err());
+        assert!(property_of(r#"id="x" type="Nonsense""#, "").is_err());
+    }
+
+    /// A huge declared shape must report overflow rather than wrapping to a
+    /// small size that then gets used as an allocation.
+    #[test]
+    fn an_absurd_shape_does_not_overflow() {
+        let m = property_of(
+            &format!(r#"id="m" type="F64Matrix" rows="{0}" columns="{0}""#, u64::MAX),
+            "",
+        )
+        .unwrap();
+        assert_eq!(m.component_count(), None);
+        assert_eq!(m.data_size(), None);
     }
 
     #[test]
