@@ -33,15 +33,45 @@ Two independent blockers, either of which is fatal to "drop-in libXISF":
 1. **Licence.** GPL-3.0 is not compatible with MIT. For libasdf we vendored
    the upstream headers verbatim because they were BSD-3-Clause; we cannot do
    that here. Nothing from libXISF may be copied into this project.
-2. **It has no C ABI.** `libxisf.h` declares C++ classes in namespace
-   `LibXISF` — `XISFReader`, `XISFWriter`, `Image`, `Variant`, a template
-   `Matrix`, and `class Error : public std::exception`. There is no
-   `extern "C"` anywhere. A Rust library cannot be a binary drop-in for that:
-   it would have to reproduce Itanium/MSVC name mangling, vtable layouts, RTTI,
-   `std::string` and `std::vector` internal layouts (which differ between
-   libstdc++, libc++ and MSVC STL and are not stable), and throw real C++
-   exceptions, which Rust cannot do on stable. The template is instantiated in
-   the *caller*, so it cannot be provided by a library at all.
+2. **It has no C ABI.** This was checked against a built library rather than
+   inferred from the header. `libXISF.so.0.2.13` exports **479 symbols**:
+
+   | | |
+   |---|---|
+   | C++ mangled (`_Z…`) | 480 |
+   | Unmangled | 75 — **every one** from the bundled LZ4/ZSTD/XXH |
+   | libXISF's own, with C linkage | **0** |
+   | Demangling to `LibXISF::` | 187 |
+
+   The only `extern "C"` in the source tree is in the vendored zlib and lz4;
+   `LIBXISF_EXPORT` is a visibility/`dllexport` macro and implies nothing about
+   linkage. So the entire public surface is C++ classes in namespace
+   `LibXISF`, and the signatures show why that is not reachable from Rust:
+
+   ```
+   LibXISF::XISFModify::open(std::__cxx11::basic_string<char, …> const&)
+   LibXISF::XISFModify::open(std::filesystem::__cxx11::path const&)
+   LibXISF::XISFModify::open(std::basic_istream<char, …>*)
+   LibXISF::XISFModify::save(LibXISF::ByteArray&)
+   ```
+
+   Note the `__cxx11` ABI tags: these mangled names are specific to
+   libstdc++. Built against libc++ or MSVC STL the symbols are *different*, so
+   even a hypothetical replacement would have to pick one C++ standard library
+   and match its internal `std::string` and `std::vector` layouts, which are
+   not stable. It would also have to throw real C++ exceptions
+   (`class Error : public std::exception`), which Rust cannot do on stable,
+   and the `Matrix` template is instantiated in the *caller*, so no library
+   can supply it at all.
+
+   **On writing our own limited header instead:** a header we author declaring
+   the same *C* functions would be sound practice — that is what `xisf-c` is.
+   But there are no C functions here to declare. Writing our own header that
+   re-declared libXISF's *classes* would mean reproducing its class layouts and
+   member signatures, which is much closer to copying its expression than
+   declaring a C function is, and it would still not link, for the reasons
+   above. The honest options are a C ABI of our own design, or, later, a C++
+   convenience header of our own design layered on top of it.
 
 **Consequence: there will be no drop-in libXISF replacement.** See §3 for what
 replaces that goal.
