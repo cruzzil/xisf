@@ -4,6 +4,7 @@ members = [
     "crates/xisf-core",
     "crates/xisf",
     "crates/libxisf",
+    "crates/xisf-cli",
 ]
 
 [workspace.package]
@@ -16,6 +17,7 @@ authors = ["The xisf-rs Developers"]
 
 [workspace.dependencies]
 xisf-core = { path = "crates/xisf-core", version = "0.1.0" }
+xisf = { path = "crates/xisf", version = "0.1.0" }
 
 quick-xml = "0.38"
 thiserror = "2"

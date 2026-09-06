@@ -1,0 +1,27 @@
+[package]
+name = "xisf-cli"
+description = "Command-line tool for inspecting XISF files"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "xisf"
+path = "src/main.rs"
+# The binary shares its name with the `xisf` library, so rustdoc would write
+# both to `doc/xisf/`. A `main.rs` has no public API to publish.
+doc = false
+
+[dependencies]
+xisf.workspace = true
+xisf-core.workspace = true
+
+[dev-dependencies]
+xisf.workspace = true
+xisf-core.workspace = true
+
+[lints]
+workspace = true

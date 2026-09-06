@@ -1,0 +1,235 @@
+//! `xisf` -- a command-line tool for inspecting XISF files.
+//!
+//! Argument parsing is hand-rolled rather than pulled from a crate. The whole
+//! workspace is free of C dependencies and light on Rust ones, and a tool with
+//! four subcommands and six flags does not justify reversing that.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+
+use xisf::XisfFile;
+use xisf_core::block::Location;
+
+const USAGE: &str = "\
+xisf -- inspect XISF (Extensible Image Serialization Format) files
+
+USAGE:
+    xisf <command> [options] <file>...
+
+COMMANDS:
+    info      Summarise a file: its images, geometry and metadata
+    header    Print the raw XML header
+    verify    Check every recorded checksum
+    dump      Write an image's pixel data to standard output
+
+OPTIONS:
+    -i, --image <n>   Which image to act on, for `dump` (default 0)
+    -v, --verbose     Show more, including FITS keywords and properties
+    -h, --help        Print this
+    -V, --version     Print the version
+";
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(message) => {
+            eprintln!("xisf: {message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+struct Options {
+    command: String,
+    files: Vec<PathBuf>,
+    image: usize,
+    verbose: bool,
+}
+
+fn run() -> Result<ExitCode, String> {
+    let mut args = std::env::args().skip(1);
+    let mut command: Option<String> = None;
+    let mut files = Vec::new();
+    let mut image = 0usize;
+    let mut verbose = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                print!("{USAGE}");
+                return Ok(ExitCode::SUCCESS);
+            }
+            "-V" | "--version" => {
+                println!("xisf {}", env!("CARGO_PKG_VERSION"));
+                return Ok(ExitCode::SUCCESS);
+            }
+            "-v" | "--verbose" => verbose = true,
+            "-i" | "--image" => {
+                let value = args.next().ok_or("--image needs a number")?;
+                image = value.parse().map_err(|_| format!("{value:?} is not an image index"))?;
+            }
+            other if other.starts_with('-') && other.len() > 1 => {
+                return Err(format!("unknown option {other:?}; try --help"));
+            }
+            other if command.is_none() => command = Some(other.to_string()),
+            other => files.push(PathBuf::from(other)),
+        }
+    }
+
+    let Some(command) = command else {
+        print!("{USAGE}");
+        return Ok(ExitCode::FAILURE);
+    };
+    if files.is_empty() {
+        return Err(format!("`{command}` needs at least one file"));
+    }
+
+    let options = Options { command, files, image, verbose };
+    match options.command.as_str() {
+        "info" => info(&options),
+        "header" => header(&options),
+        "verify" => verify(&options),
+        "dump" => dump(&options),
+        other => Err(format!("unknown command {other:?}; try --help")),
+    }
+}
+
+fn open(path: &Path) -> Result<XisfFile, String> {
+    XisfFile::open(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn info(options: &Options) -> Result<ExitCode, String> {
+    for (index, path) in options.files.iter().enumerate() {
+        if index > 0 {
+            println!();
+        }
+        let file = open(path)?;
+        println!("{}", path.display());
+
+        let images = file.images();
+        println!("  {} image(s)", images.len());
+        for (n, image) in images.iter().enumerate() {
+            let geometry: Vec<String> = image.geometry().iter().map(u64::to_string).collect();
+            println!(
+                "  [{n}] {}, {} channel(s), {}, {}",
+                geometry.join(" x "),
+                image.channels(),
+                image.sample_format().name(),
+                image.color_space().name()
+            );
+
+            let stored = match image.location() {
+                Some(Location::Attachment { position, size }) => {
+                    format!("attached at {position}, {size} bytes")
+                }
+                Some(Location::Embedded) => "embedded".to_string(),
+                Some(Location::Inline { encoding }) => format!("inline, {encoding:?}"),
+                Some(Location::Path { path, .. }) => format!("external file {path}"),
+                Some(Location::Url { url, .. }) => format!("external URL {url}"),
+                None => "no data block".to_string(),
+            };
+            println!("       {stored}");
+            println!(
+                "       {} byte order{}{}",
+                if image.byte_order() == xisf_core::block::ByteOrder::Big {
+                    "big-endian"
+                } else {
+                    "little-endian"
+                },
+                if image.is_compressed() { ", compressed" } else { "" },
+                image.bounds().map_or(String::new(), |b| format!(", bounds {}:{}", b.low, b.high))
+            );
+
+            if options.verbose {
+                for (name, value, comment) in image.fits_keywords() {
+                    let comment =
+                        if comment.is_empty() { String::new() } else { format!("  / {comment}") };
+                    println!("       FITS {name:<10} {value}{comment}");
+                }
+            }
+        }
+
+        let metadata = file.metadata();
+        if !metadata.is_empty() {
+            println!(
+                "  {} propert{}",
+                metadata.len(),
+                if metadata.len() == 1 { "y" } else { "ies" }
+            );
+            if options.verbose {
+                for (id, value) in &metadata {
+                    println!("       {id} = {value}");
+                }
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn header(options: &Options) -> Result<ExitCode, String> {
+    for path in &options.files {
+        let file = open(path)?;
+        let reader = file.reader();
+        let layout = xisf_core::layout::scan(reader.bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = xisf_core::layout::header_str(reader.bytes(), &layout)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        println!("{text}");
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn verify(options: &Options) -> Result<ExitCode, String> {
+    let mut failures = 0usize;
+    let mut checked = 0usize;
+    let mut absent = 0usize;
+
+    for path in &options.files {
+        let file = open(path)?;
+        for (n, image) in file.images().iter().enumerate() {
+            match image.verify() {
+                Ok(xisf_core::reader::ChecksumStatus::Valid) => {
+                    checked += 1;
+                    if options.verbose {
+                        println!("{}: [{n}] ok", path.display());
+                    }
+                }
+                Ok(xisf_core::reader::ChecksumStatus::Absent) => {
+                    absent += 1;
+                    if options.verbose {
+                        println!("{}: [{n}] no checksum recorded", path.display());
+                    }
+                }
+                Ok(xisf_core::reader::ChecksumStatus::Invalid) => {
+                    failures += 1;
+                    println!("{}: [{n}] CHECKSUM MISMATCH", path.display());
+                }
+                Err(e) => {
+                    failures += 1;
+                    println!("{}: [{n}] could not verify: {e}", path.display());
+                }
+            }
+        }
+    }
+
+    // A file with no checksums is not a pass, and saying "ok" would imply
+    // something was checked. The counts say what actually happened.
+    println!("{checked} verified, {absent} without a checksum, {failures} failed");
+    Ok(if failures == 0 { ExitCode::SUCCESS } else { ExitCode::FAILURE })
+}
+
+fn dump(options: &Options) -> Result<ExitCode, String> {
+    let path = &options.files[0];
+    let file = open(path)?;
+    let images = file.images();
+    let image = images
+        .get(options.image)
+        .ok_or_else(|| format!("{} has no image {}", path.display(), options.image))?;
+
+    let data = image.bytes().map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(&data).map_err(|e| e.to_string())?;
+    stdout.flush().map_err(|e| e.to_string())?;
+    Ok(ExitCode::SUCCESS)
+}
