@@ -12,13 +12,33 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// A C compiler whose ABI matches the one Rust is building for.
+///
+/// This has to match, not merely exist. On Windows the runners carry MinGW
+/// `gcc` while Rust targets MSVC, and linking an MSVC `.lib` with MinGW's `ld`
+/// fails on `__chkstk` and every Windows import symbol -- the two runtimes do
+/// not mix. Picking the wrong one produces a wall of undefined references that
+/// looks like a bug in the library and is not.
 fn compiler() -> Option<String> {
-    for candidate in ["cc", "gcc", "clang"] {
-        if Command::new(candidate).arg("--version").output().is_ok_and(|o| o.status.success()) {
-            return Some(candidate.to_string());
+    let candidates: &[&str] =
+        if cfg!(target_env = "msvc") { &["cl"] } else { &["cc", "gcc", "clang"] };
+
+    for candidate in candidates {
+        // `cl` prints its banner to stderr and exits non-zero with no input,
+        // so its presence is what is checked rather than its exit status.
+        let ran = Command::new(candidate).arg("--version").output();
+        if let Ok(output) = ran
+            && (output.status.success() || cfg!(target_env = "msvc"))
+        {
+            return Some((*candidate).to_string());
         }
     }
     None
+}
+
+/// Whether the compiler above takes MSVC-style arguments.
+fn msvc_style() -> bool {
+    cfg!(target_env = "msvc")
 }
 
 fn manifest_dir() -> PathBuf {
@@ -65,21 +85,36 @@ fn run_c_program(name: &str, source: &str, args: &[&Path]) -> Result<String, Str
     let binary = dir.join(name);
     std::fs::write(&source_path, source).map_err(|e| e.to_string())?;
 
-    let output = Command::new(&cc)
-        .arg("-std=c11")
-        .arg("-Wall")
-        .arg("-Wextra")
-        .arg("-Werror")
-        .arg("-I")
-        .arg(manifest_dir().join("include"))
-        .arg(&source_path)
-        .arg("-o")
-        .arg(&binary)
-        .arg("-L")
-        .arg(&lib_dir)
-        .arg("-lxisf")
-        .output()
-        .map_err(|e| e.to_string())?;
+    let mut command = Command::new(&cc);
+    if msvc_style() {
+        command
+            .arg("/std:c11")
+            .arg("/W4")
+            .arg("/WX")
+            .arg("/nologo")
+            .arg(format!("/I{}", manifest_dir().join("include").display()))
+            .arg(&source_path)
+            .arg(format!("/Fe:{}", binary.display()))
+            .arg(lib_dir.join("xisf.lib"))
+            // What Rust's Windows target links against; a staticlib does not
+            // carry these itself.
+            .args(["ws2_32.lib", "userenv.lib", "ntdll.lib", "bcrypt.lib", "advapi32.lib"]);
+    } else {
+        command
+            .arg("-std=c11")
+            .arg("-Wall")
+            .arg("-Wextra")
+            .arg("-Werror")
+            .arg("-I")
+            .arg(manifest_dir().join("include"))
+            .arg(&source_path)
+            .arg("-o")
+            .arg(&binary)
+            .arg("-L")
+            .arg(&lib_dir)
+            .arg("-lxisf");
+    }
+    let output = command.output().map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(format!(
             "compiling {name} failed:\n{}",
@@ -250,15 +285,14 @@ int main(int argc, char **argv) {
 /// C API. This also proves the `extern "C"` guard is present and balanced.
 #[test]
 fn the_header_compiles_as_cplusplus() {
-    let Some(_) = compiler() else {
-        eprintln!("skipping: no C compiler");
-        return;
-    };
-    let Ok(cxx) = Command::new("c++").arg("--version").output() else {
+    // Syntax-only, so any C++ compiler will do regardless of which runtime
+    // Rust is targeting -- nothing is linked.
+    let cxx_name = if cfg!(target_env = "msvc") { "cl" } else { "c++" };
+    let Ok(probe) = Command::new(cxx_name).arg("--version").output() else {
         eprintln!("skipping: no C++ compiler");
         return;
     };
-    if !cxx.status.success() {
+    if !probe.status.success() && !cfg!(target_env = "msvc") {
         eprintln!("skipping: no C++ compiler");
         return;
     }
@@ -269,13 +303,20 @@ fn the_header_compiles_as_cplusplus() {
     std::fs::write(&source, "#include <xisf.h>\nint main() { return xisf_version() ? 0 : 1; }\n")
         .unwrap();
 
-    let output = Command::new("c++")
-        .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
-        .arg("-I")
-        .arg(manifest_dir().join("include"))
-        .arg(&source)
-        .output()
-        .expect("run c++");
+    let mut command = Command::new(cxx_name);
+    if cfg!(target_env = "msvc") {
+        command
+            .args(["/std:c++17", "/W4", "/WX", "/nologo", "/Zs"])
+            .arg(format!("/I{}", manifest_dir().join("include").display()))
+            .arg(&source);
+    } else {
+        command
+            .args(["-std=c++17", "-Wall", "-Wextra", "-Werror", "-fsyntax-only"])
+            .arg("-I")
+            .arg(manifest_dir().join("include"))
+            .arg(&source);
+    }
+    let output = command.output().expect("run the C++ compiler");
 
     assert!(
         output.status.success(),
