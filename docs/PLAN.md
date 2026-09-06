@@ -222,8 +222,20 @@ here, and none of them requires deriving from restricted source.
    second implementation notices.
 
 
-4. **The `xisf-rs` crate** as a second opinion, used the same way — as an
-   independent reader to compare against, never as a source to copy.
+4. **`seiza-xisf`** as a third implementation, used the same way — an
+   independent reader to compare against, never a source to copy. Apache-2.0,
+   and a dev-dependency, so it is absent from what a consumer builds. It
+   agrees on 30 files we write and 17 corpus files.
+
+   It complements the libXISF oracle rather than duplicating it. libXISF is
+   the stronger check and also generates the corpus, but needs cmake, a C++
+   toolchain and a clone from a third-party host, so it runs on one CI job.
+   `seiza-xisf` is pure Rust and runs on all six platforms with no build
+   step, which makes it the one that would catch a writer producing files
+   correct only on x86-64 Linux.
+
+   (An earlier draft named the `xisf-rs` crate here; `seiza-xisf` is more
+   complete and actively maintained.)
 
 Plus, carried over from the ASDF project because they earned their place:
 
@@ -249,7 +261,8 @@ Plus, carried over from the ASDF project because they earned their place:
    colour spaces. Gate: full value-level comparison against the samples.
 4. **`xisf-core` writing** — header emit, block layout, checksums, compression.
    Gate: libXISF reads what we write (the XSD is unpublished; see above).
-5. **`xisf`** — the idiomatic API, with benchmarks alongside.
+5. ~~**`xisf`** — the idiomatic API, with benchmarks alongside.~~ Done; see
+   `docs/PERFORMANCE.md`.
 6. **`xisf-c`** — the C ABI, its header, and a C conformance harness modelled
    on the ASDF one. Miri from the first commit.
 7. **`xisf-cli`**.
