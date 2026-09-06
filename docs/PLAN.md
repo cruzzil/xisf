@@ -106,11 +106,19 @@ verbatim PCL banner —
 // Copyright (c) 2003-2022 Pleiades Astrophoto S.L. All Rights Reserved.
 ```
 
-It has been removed from the working tree. **It remains in git history**, which
-is worth deciding about separately: publishing an MIT crate from a repository
-whose history contains unlicensed PCL-derived code is untidy at best. Options
-are to leave it (history is not distributed by `cargo publish`), or to start
-the history fresh.
+It has been removed, and so has the history containing it: all twenty original
+commits carried `src/`, so the branch was re-rooted onto a fresh initial commit
+rather than filtered. No commit reachable from `main` contains PCL-derived
+source. (The phrase "PixInsight Class Library" still appears in this document
+and in `xisf-core/src/lib.rs`, where it is prose recording *why* none of it is
+used.)
+
+Two caveats worth knowing. The old history survives locally on the
+`backup-pcl-history` branch and the `old-history-backup` tag, which can be
+deleted once nobody wants them. And GitHub keeps unreachable objects for a
+while after a force-push, so an old commit may still be fetchable by its SHA
+until they are garbage-collected; deleting and recreating the repository is
+the only way to be certain.
 
 The three `.xisf` sample files were kept, under `corpus/pixinsight/`. They are
 PixInsight *output*, not PCL source — data produced by a program, which the
