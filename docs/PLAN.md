@@ -23,8 +23,10 @@ Section 4 of the spec is unambiguous, and is what makes this project possible:
 > availability or impose a monetary cost for its availability or its use.
 > These conditions shall constitute a legally binding assignment.
 
-Everything here is written from that document. The XSD schema it references,
-`http://pixinsight.com/xisf/xisf-1.0.xsd`, is part of the same definition.
+Everything here is written from that document. It references an XSD schema at
+`http://pixinsight.com/xisf/xisf-1.0.xsd`, which would be part of the same
+definition -- but that URL returns 404, so the specification prose is the only
+normative source actually available.
 
 ### libXISF is GPL-3.0, and is not a C ABI anyway
 
@@ -191,17 +193,35 @@ The hardest lesson from the ASDF work: a green test suite proved very little
 until it was checked against oracles someone else wrote. Four are available
 here, and none of them requires deriving from restricted source.
 
-1. **The official XSD schema** (`xisf-1.0.xsd`). Every header we emit is
-   validated against the format's own schema. This is the strongest gate and
-   has no analogue in the ASDF project.
+1. ~~**The official XSD schema**~~ -- **not available.** This plan called it
+   the strongest gate. It does not exist: `xisf-1.0.xsd` returns 404 at every
+   location tried, including `http://pixinsight.com/xisf/xisf-1.0.xsd`, which
+   is the exact URL every XISF file's own `xsi:schemaLocation` names -- the
+   files in `corpus/pixinsight/` included. The schema is referenced by the
+   format and is not published, so there is nothing to validate against.
+
+   Its replacement is item 3, and is arguably better: a schema checks that a
+   header is *shaped* right, while another implementation reading the file
+   checks that it *means* what we intended.
+
+
 2. **PixInsight sample files.** Three to start (`corpus/pixinsight/`), already
    covering embedded base64, attachment blocks, byte-shuffled zlib, SHA-256 and
    FITS keywords. To be extended.
-3. **libXISF as a black-box oracle.** Running a GPL program and comparing its
-   output to ours is not derivation and creates no licensing obligation — we
-   just must not link it or copy from it. It reads and writes XISF, so it can
-   both check our output and generate corpus files. This is the analogue of the
-   Python `asdf` differential tests.
+3. **libXISF as a black-box oracle, in both directions.** Running a GPL
+   program and comparing its output to ours is not derivation and creates no
+   licensing obligation -- we just must not link it or copy from it. Both
+   directions are wired up and both matter, because they fail differently:
+
+   - `tools/corpus-gen/generate.cpp` writes files we read. 40 of 40 match
+     byte for byte.
+   - `tools/corpus-gen/verify.cpp` reads files we write. 51 of 51 accepted.
+
+   The second is the one no Rust test can replace. A reader and writer that
+   share a misunderstanding round-trip through each other perfectly; only a
+   second implementation notices.
+
+
 4. **The `xisf-rs` crate** as a second opinion, used the same way — as an
    independent reader to compare against, never as a source to copy.
 
@@ -228,7 +248,7 @@ Plus, carried over from the ASDF project because they earned their place:
 3. **Properties and images** — the type system, geometry, sample formats,
    colour spaces. Gate: full value-level comparison against the samples.
 4. **`xisf-core` writing** — header emit, block layout, checksums, compression.
-   Gate: XSD validation, and libXISF reads what we write.
+   Gate: libXISF reads what we write (the XSD is unpublished; see above).
 5. **`xisf`** — the idiomatic API, with benchmarks alongside.
 6. **`xisf-c`** — the C ABI, its header, and a C conformance harness modelled
    on the ASDF one. Miri from the first commit.

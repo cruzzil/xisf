@@ -69,6 +69,46 @@ jobs:
           grep -q "40 of 40 files matched byte for byte" out.txt \
             || { echo "the generated corpus did not run, or did not fully match"; exit 1; }
 
+  # Both directions of the libXISF oracle. The corpus job proves we read what
+  # it writes; this proves it reads what we write, which no Rust test can --
+  # a reader and writer that share a misunderstanding round-trip through each
+  # other perfectly. libXISF is GPL-3.0 and is never linked into the library;
+  # this builds it, and the GPL tool that drives it, as separate binaries.
+  round-trip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # libXISF is on its author's own Gitea, not GitHub, so this is a plain
+      # clone rather than actions/checkout. The whole step is best-effort: a
+      # third-party host being down should warn, not fail the build.
+      - name: Build libXISF and the verifier
+        id: build
+        continue-on-error: true
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zlib1g-dev libzstd-dev
+          git clone --depth 1 https://gitea.nouspiro.space/nou/libXISF.git /tmp/libXISF
+          cmake -S /tmp/libXISF -B /tmp/libxisf-build -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/libxisf-build -j
+          g++ -std=c++17 -O2 -o /tmp/xisf-verify tools/corpus-gen/verify.cpp \
+              -I /tmp/libXISF -L /tmp/libxisf-build -lXISF
+
+      - name: Round-trip through libXISF
+        if: steps.build.outcome == 'success'
+        env:
+          XISF_VERIFY: /tmp/xisf-verify
+          LD_LIBRARY_PATH: /tmp/libxisf-build
+        run: |
+          cargo test -p xisf-core --test round_trip_libxisf -- --nocapture 2>&1 | tee out.txt
+          grep -q "libXISF read 51 of 51" out.txt \
+            || { echo "the round-trip did not run, or did not fully pass"; exit 1; }
+
+      - name: Report a skipped oracle
+        if: steps.build.outcome != 'success'
+        run: echo "::warning::libXISF could not be built; the round-trip oracle did not run"
+
   # Every unsafe block in the workspace is the one memory map in xisf-core.
   # That is little today and will not stay little once xisf-c exists, so the
   # job is here from the start rather than added after it is needed.

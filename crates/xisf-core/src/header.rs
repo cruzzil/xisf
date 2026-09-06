@@ -110,8 +110,12 @@ pub fn parse(xml: &str) -> Result<Header> {
             }
 
             Ok(Event::Text(text)) => {
-                let decoded = text.decode().map_err(|e| err!(BadHeader, "character data: {e}"))?;
-                push_text(&mut stack, &decoded);
+                // `decode` converts bytes to text; it does *not* resolve
+                // entities. Without unescaping, `&amp;` and `&lt;` are
+                // silently dropped rather than becoming `&` and `<`, which
+                // corrupts any character data containing them.
+                let raw = text.decode().map_err(|e| err!(BadHeader, "character data: {e}"))?;
+                push_text(&mut stack, &raw);
             }
             // Base64 and hex blocks are sometimes wrapped in CDATA; the
             // content means the same thing either way.
@@ -119,6 +123,18 @@ pub fn parse(xml: &str) -> Result<Header> {
                 let decoded = String::from_utf8(data.to_vec())
                     .map_err(|e| err!(BadHeader, "CDATA is not UTF-8: {e}"))?;
                 push_text(&mut stack, &decoded);
+            }
+            // An entity or character reference inside character data arrives
+            // as its own event rather than as part of the surrounding text.
+            // Left to the catch-all below it would be dropped silently, so
+            // `a &amp; b` would read back as `a  b` -- data loss that looks
+            // like nothing at all went wrong.
+            Ok(Event::GeneralRef(reference)) => {
+                let raw = std::str::from_utf8(&reference)
+                    .map_err(|e| err!(BadHeader, "entity reference: {e}"))?;
+                let resolved = resolve_entity(raw)
+                    .ok_or_else(|| err!(BadHeader, "unknown entity reference &{raw};"))?;
+                push_text(&mut stack, &resolved);
             }
             // Comments, declarations and processing instructions carry no
             // data the engine needs.
@@ -141,10 +157,37 @@ pub fn parse(xml: &str) -> Result<Header> {
     Ok(Header { version, root })
 }
 
-/// Append character data to the element currently open, ignoring whitespace
-/// between elements.
+/// Resolve the five entities XML predefines, and numeric character
+/// references. XISF headers declare no DTD, so nothing else can appear.
+fn resolve_entity(name: &str) -> Option<String> {
+    Some(match name {
+        "amp" => "&".into(),
+        "lt" => "<".into(),
+        "gt" => ">".into(),
+        "quot" => "\"".into(),
+        "apos" => "'".into(),
+        _ => {
+            let digits = name.strip_prefix('#')?;
+            let code = match digits.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => digits.parse::<u32>().ok()?,
+            };
+            char::from_u32(code)?.to_string()
+        }
+    })
+}
+
+/// Append character data to the element currently open.
+///
+/// Whitespace is kept. Discarding whitespace-only runs would be a tempting
+/// way to ignore indentation between elements, but character data arrives in
+/// pieces -- an entity reference splits it -- so `&quot;a&quot; &apos;b&apos;`
+/// reaches here as three fragments with the significant space arriving alone.
+/// Dropping it loses data with no error. Indentation is dealt with where it
+/// matters instead: block decoders strip whitespace, which is insignificant in
+/// both base64 and hex.
 fn push_text(stack: &mut [Element], text: &str) {
-    if text.trim().is_empty() {
+    if text.is_empty() {
         return;
     }
     if let Some(current) = stack.last_mut() {
@@ -159,7 +202,10 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
             // An `<Data>` child is not an element in its own right: it exists
             // to carry an embedded block's text for the element around it.
             if element.name == "Data" {
-                if parent.data.text.is_none() {
+                // The parent may already hold the indentation that preceded
+                // this child, which is not content and must not block the
+                // promotion.
+                if parent.data.text.as_deref().is_none_or(|t| t.trim().is_empty()) {
                     parent.data.text = element.data.text.clone();
                 }
                 if parent.data.location.is_none() {
@@ -273,6 +319,40 @@ mod tests {
         let keywords: Vec<_> = image.children_named("FITSKeyword").collect();
         assert_eq!(keywords.len(), 2);
         assert_eq!(keywords[1].attr("name"), Some("BITPIX"));
+    }
+
+    /// Entity references arrive as their own event, not as part of the text
+    /// around them. Dropping them silently turns `a &amp; b` into `a  b` --
+    /// data loss with no error, which is why this is pinned directly rather
+    /// than left to a round-trip test to notice.
+    #[test]
+    fn entity_and_character_references_are_resolved() {
+        for (xml, expected) in [
+            ("a &amp; b", "a & b"),
+            ("&lt;tag&gt;", "<tag>"),
+            ("&quot;q&quot; &apos;a&apos;", "\"q\" 'a'"),
+            ("&#65;&#66;&#67;", "ABC"),
+            ("&#x41;&#x42;", "AB"),
+            ("&#xe9;", "\u{e9}"),
+            ("mixed &amp; matched &#33;", "mixed & matched !"),
+        ] {
+            let doc = format!(
+                r#"<xisf version="1.0"><Property id="t" type="String">{xml}</Property></xisf>"#
+            );
+            let header = parse(&doc).unwrap_or_else(|e| panic!("{xml}: {e}"));
+            let property = &header.root.children[0];
+            assert_eq!(
+                property.data.text.as_deref(),
+                Some(expected),
+                "{xml} should read back as {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_entity_is_an_error_rather_than_a_silent_gap() {
+        let xml = r#"<xisf version="1.0"><Property id="t">&nosuch;</Property></xisf>"#;
+        assert_eq!(parse(xml).unwrap_err().kind(), ErrorKind::BadHeader);
     }
 
     #[test]

@@ -26,6 +26,7 @@ pub mod image;
 pub mod layout;
 pub mod property;
 pub mod reader;
+pub mod writer;
 
 pub use error::{Error, ErrorKind, Result};
 pub use reader::{ChecksumStatus, Reader};
