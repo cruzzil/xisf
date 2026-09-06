@@ -7,8 +7,7 @@
 
 use std::path::PathBuf;
 
-use xisf_core::block::{Codec, Location};
-use xisf_core::reader::ChecksumStatus;
+use xisf_core::block::Location;
 use xisf_core::{ErrorKind, Reader};
 
 fn corpus() -> PathBuf {
@@ -59,6 +58,9 @@ fn reads_an_uncompressed_attached_image() {
 #[cfg(all(feature = "zlib", feature = "checksums"))]
 #[test]
 fn reads_a_shuffled_zlib_image_and_verifies_its_checksum() {
+    use xisf_core::block::Codec;
+    use xisf_core::reader::ChecksumStatus;
+
     let reader = open("Sample_F32_ZlibCompression_Sha256Security.xisf");
     let image = reader.header().images()[0];
 

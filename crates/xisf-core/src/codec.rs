@@ -39,6 +39,10 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     }
 }
 
+// With every codec feature off, each arm below is compiled out and only the
+// catch-all remains, leaving these parameters unread. That is the correct
+// behaviour for such a build, not an oversight.
+#[cfg_attr(not(any(feature = "zlib", feature = "lz4", feature = "zstd")), allow(unused_variables))]
 fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
     match codec {
         #[cfg(feature = "zlib")]
