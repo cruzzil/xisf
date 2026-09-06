@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Six platforms. The corpus is compared byte for byte, so this is where a
+  # reader that assumed the host's endianness, or a checkout that rewrote
+  # bytes inside a binary fixture, would show up. Unlike most projects here
+  # the corpus is committed, so every platform runs the full suite with no
+  # external checkout.
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x64,     os: ubuntu-latest }
+          - { name: linux-arm64,   os: ubuntu-24.04-arm }
+          - { name: macos-arm64,   os: macos-latest }
+          - { name: macos-x64,     os: macos-15-intel }
+          - { name: windows-x64,   os: windows-latest }
+          - { name: windows-arm64, os: windows-11-arm, bootstrap: true }
+    steps:
+      # Must precede the checkout. Git on Windows rewrites line endings as it
+      # checks files out; .gitattributes marks the .xisf corpus binary, but
+      # turning the rewriting off entirely is one less thing to get wrong.
+      - name: Check out with the bytes the files actually have
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+
+      # The windows-11-arm image ships no Rust toolchain.
+      - name: Install rustup (Windows ARM64)
+        if: matrix.bootstrap
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://static.rust-lang.org/rustup/dist/aarch64-pc-windows-msvc/rustup-init.exe" -OutFile rustup-init.exe
+          .\rustup-init.exe --default-toolchain stable -y
+          "$env:USERPROFILE\.cargo\bin" | Out-File -Append -Encoding ascii $env:GITHUB_PATH
+          "CARGO_HOME=$env:USERPROFILE\.cargo" | Out-File -Append -Encoding ascii $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ !matrix.bootstrap }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace -- --nocapture
+
+      # The corpus tests skip with a note when their directory is missing, so
+      # a green run could in principle mean they never ran. This asserts they
+      # actually compared files.
+      - name: Confirm the corpus ran
+        shell: bash
+        run: |
+          cargo test -p xisf-core --test generated_corpus -- --nocapture 2>&1 | tee out.txt
+          grep -q "40 of 40 files matched byte for byte" out.txt \
+            || { echo "the generated corpus did not run, or did not fully match"; exit 1; }
+
+  # Every unsafe block in the workspace is the one memory map in xisf-core.
+  # That is little today and will not stay little once xisf-c exists, so the
+  # job is here from the start rather than added after it is needed.
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+      - name: Miri
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation
+        run: cargo +nightly miri test -p xisf-core
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+      - name: Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+  # Each optional codec must build and pass on its own: a consumer who turns
+  # off zstd should not find the crate stops compiling.
+  features:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: No optional features
+        run: cargo test -p xisf-core --no-default-features
+      - name: Each codec alone
+        run: |
+          for feature in zlib lz4 zstd checksums; do
+            echo "== $feature =="
+            cargo test -p xisf-core --no-default-features --features "$feature"
+          done
+
+  # The declared rust-version is a promise to dependants, so it is checked
+  # rather than asserted.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets

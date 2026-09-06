@@ -20,7 +20,10 @@ thiserror = "2"
 base64 = "0.22"
 flate2 = "1"
 lz4_flex = "0.11"
-zstd = "0.14"
+# Pure Rust rather than the `zstd` crate's C bindings: this keeps the whole
+# workspace free of a C toolchain, which matters for the six-platform CI and
+# lets Miri run, and zstd is not one of XISF 1.0's standard codecs anyway.
+ruzstd = "0.9"
 sha1 = "0.10"
 sha2 = "0.10"
 sha3 = "0.10"

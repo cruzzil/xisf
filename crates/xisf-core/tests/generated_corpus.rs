@@ -91,7 +91,9 @@ fn every_generated_file_reads_back_exactly() {
             "{name}: the bytes differ from what the generator wrote"
         );
 
-        assert!(!reader.verify(&image.data).unwrap().is_failure(), "{name}: checksum mismatch");
+        if cfg!(feature = "checksums") {
+            assert!(!reader.verify(&image.data).unwrap().is_failure(), "{name}: checksum mismatch");
+        }
         matched += 1;
     }
 
@@ -101,12 +103,29 @@ fn every_generated_file_reads_back_exactly() {
     }
 
     assert!(matched > 0, "no generated file was read");
-    // Every codec XISF 1.0 lists as standard must be readable; only
-    // non-standard ones may land in `unsupported`.
-    for (name, _) in &unsupported {
+
+    // A file may only be unreadable because the codec it uses was left out of
+    // the build. Anything whose codec *is* compiled in must have been read,
+    // which is what stops a decoding bug hiding behind this allowance.
+    let compiled_in: &[&str] = &[
+        #[cfg(feature = "zlib")]
+        "zlib",
+        #[cfg(feature = "lz4")]
+        "lz4",
+        #[cfg(feature = "zstd")]
+        "zstd",
+    ];
+    for (name, why) in &unsupported {
+        let codec = name.trim_end_matches(".xisf").rsplit('_').next().unwrap_or("");
+        let codec = codec.trim_end_matches("+sh").trim_end_matches("hc");
         assert!(
-            name.contains("zstd"),
-            "{name} uses a standard XISF 1.0 codec and should have been read"
+            !compiled_in.contains(&codec),
+            "{name} uses {codec}, which is compiled in, so it should have been read: {why}"
         );
+    }
+
+    // With every codec available nothing may be left unread.
+    if compiled_in.len() == 3 {
+        assert_eq!(matched, files.len(), "every file should be readable in a full build");
     }
 }

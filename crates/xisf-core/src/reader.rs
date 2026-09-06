@@ -30,6 +30,10 @@ impl ChecksumStatus {
 
 /// Where a reader's bytes come from.
 enum Source {
+    /// Absent under Miri, which cannot execute `mmap`: `Reader::open` reads
+    /// the file whole there, so nothing would construct this and `dead_code`
+    /// would fire.
+    #[cfg(not(miri))]
     Mapped(memmap2::Mmap),
     Owned(Vec<u8>),
 }
@@ -38,6 +42,7 @@ impl std::ops::Deref for Source {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         match self {
+            #[cfg(not(miri))]
             Source::Mapped(m) => m,
             Source::Owned(v) => v,
         }
@@ -47,6 +52,7 @@ impl std::ops::Deref for Source {
 impl std::fmt::Debug for Source {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let kind = match self {
+            #[cfg(not(miri))]
             Source::Mapped(_) => "Mapped",
             Source::Owned(_) => "Owned",
         };
@@ -72,16 +78,36 @@ impl Reader {
     /// is read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
-        let file = std::fs::File::open(path)?;
 
-        // SAFETY: mapping is unsafe because another process truncating the
-        // file turns a later read into SIGBUS. That hazard is inherent to
-        // memory mapping; XISF files are written whole rather than modified
-        // in place, and mapping is what lets a multi-gigabyte image be read
-        // without loading it all.
-        let mapped = unsafe { memmap2::Mmap::map(&file) }?;
-        let (layout, header) = Self::scan(&mapped)?;
-        Ok(Self { source: Source::Mapped(mapped), layout, header, path: Some(path.into()) })
+        // Miri interprets rather than executes, so it has no `mmap`. Reading
+        // the file whole is observably the same to every caller -- `Source`
+        // hands out a `&[u8]` either way -- and it is what lets this crate be
+        // checked under Miri at all.
+        #[cfg(miri)]
+        {
+            let bytes = std::fs::read(path)?;
+            let (layout, header) = Self::scan(&bytes)?;
+            return Ok(Self {
+                source: Source::Owned(bytes),
+                layout,
+                header,
+                path: Some(path.into()),
+            });
+        }
+
+        #[cfg(not(miri))]
+        {
+            let file = std::fs::File::open(path)?;
+
+            // SAFETY: mapping is unsafe because another process truncating
+            // the file turns a later read into SIGBUS. That hazard is
+            // inherent to memory mapping; XISF files are written whole rather
+            // than modified in place, and mapping is what lets a
+            // multi-gigabyte image be read without loading it all.
+            let mapped = unsafe { memmap2::Mmap::map(&file) }?;
+            let (layout, header) = Self::scan(&mapped)?;
+            Ok(Self { source: Source::Mapped(mapped), layout, header, path: Some(path.into()) })
+        }
     }
 
     /// Scan a file already in memory.
@@ -352,6 +378,9 @@ mod tests {
         assert!(matches!(err.kind(), ErrorKind::NotFound | ErrorKind::BadAttribute));
     }
 
+    // Needs a hash implementation compiled in; without the feature the
+    // library correctly refuses rather than pretending to verify.
+    #[cfg(feature = "checksums")]
     #[test]
     fn checksums_are_over_the_stored_bytes() {
         let digest = digest_hex(&digest(b"ABC", ChecksumAlgorithm::Sha256).unwrap());
@@ -363,6 +392,9 @@ mod tests {
         assert_eq!(reader.verify(&image.data).unwrap(), ChecksumStatus::Valid);
     }
 
+    // Needs a hash implementation compiled in; without the feature the
+    // library correctly refuses rather than pretending to verify.
+    #[cfg(feature = "checksums")]
     #[test]
     fn a_wrong_checksum_is_reported_not_ignored() {
         let xml = format!(

@@ -57,7 +57,15 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
             lz4_flex::block::decompress(stored, size).map_err(|e| err!(Compression, "lz4: {e}"))
         }
         #[cfg(feature = "zstd")]
-        Codec::Zstd => zstd::stream::decode_all(stored).map_err(|e| err!(Compression, "zstd: {e}")),
+        Codec::Zstd => {
+            use std::io::Read;
+            let mut out = Vec::with_capacity(size);
+            ruzstd::decoding::StreamingDecoder::new(stored)
+                .map_err(|e| err!(Compression, "zstd: {e}"))?
+                .read_to_end(&mut out)
+                .map_err(|e| err!(Compression, "zstd: {e}"))?;
+            Ok(out)
+        }
         #[allow(unreachable_patterns)]
         other => Err(err!(Unsupported, "cannot decode {} blocks", other.name())),
     }

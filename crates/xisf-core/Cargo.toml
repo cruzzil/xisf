@@ -15,7 +15,7 @@ base64.workspace = true
 memmap2.workspace = true
 flate2 = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
-zstd = { workspace = true, optional = true }
+ruzstd = { workspace = true, optional = true }
 sha1 = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 sha3 = { workspace = true, optional = true }
@@ -26,7 +26,7 @@ zlib = ["dep:flate2"]
 lz4 = ["dep:lz4_flex"]
 # Not one of XISF 1.0's standard codecs, but libXISF writes it, so files
 # using it exist and a reader that cannot open them is less useful.
-zstd = ["dep:zstd"]
+zstd = ["dep:ruzstd"]
 checksums = ["dep:sha1", "dep:sha2", "dep:sha3"]
 
 [lints]

@@ -7,9 +7,9 @@
 
 use std::path::PathBuf;
 
-use xisf_core::Reader;
 use xisf_core::block::{Codec, Location};
 use xisf_core::reader::ChecksumStatus;
+use xisf_core::{ErrorKind, Reader};
 
 fn corpus() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus/pixinsight")
@@ -55,7 +55,8 @@ fn reads_an_uncompressed_attached_image() {
 }
 
 /// The interesting one: byte-shuffled zlib, and a checksum to prove the bytes
-/// came back exactly as PixInsight wrote them.
+/// came back exactly as PixInsight wrote them. Needs both compiled in.
+#[cfg(all(feature = "zlib", feature = "checksums"))]
 #[test]
 fn reads_a_shuffled_zlib_image_and_verifies_its_checksum() {
     let reader = open("Sample_F32_ZlibCompression_Sha256Security.xisf");
@@ -99,7 +100,7 @@ fn fits_keywords_survive_the_header() {
 /// Every sample file, read end to end, with checksums honoured.
 #[test]
 fn every_sample_file_reads_and_verifies() {
-    let mut checked = 0;
+    let (mut checked, mut skipped) = (0, 0);
     for entry in std::fs::read_dir(corpus()).expect("corpus directory").flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "xisf") {
@@ -111,19 +112,30 @@ fn every_sample_file_reads_and_verifies() {
             if element.data.location.is_none() {
                 continue;
             }
-            let status = reader
-                .verify(&element.data)
-                .unwrap_or_else(|e| panic!("{}: verify: {e}", path.display()));
-            assert!(!status.is_failure(), "{}: checksum mismatch", path.display());
+            // Only when a hash implementation is compiled in; otherwise
+            // `verify` correctly reports that it cannot check.
+            if cfg!(feature = "checksums") {
+                let status = reader
+                    .verify(&element.data)
+                    .unwrap_or_else(|e| panic!("{}: verify: {e}", path.display()));
+                assert!(!status.is_failure(), "{}: checksum mismatch", path.display());
+            }
 
-            reader
-                .block(&element.data)
-                .unwrap_or_else(|e| panic!("{}: block: {e}", path.display()));
-            checked += 1;
+            match reader.block(&element.data) {
+                Ok(_) => checked += 1,
+                // A codec or hash left out of the build is not a corpus
+                // failure; the library says so plainly and that is correct.
+                Err(e) if e.kind() == ErrorKind::Unsupported => skipped += 1,
+                Err(e) => panic!("{}: block: {e}", path.display()),
+            }
         }
     }
-    assert!(checked >= 3, "expected at least one block per sample file, checked {checked}");
-    eprintln!("corpus: {checked} data blocks read and verified");
+    eprintln!("corpus: {checked} data blocks read and verified, {skipped} skipped");
+    assert!(
+        checked + skipped >= 3,
+        "expected at least one block per sample file, saw {}",
+        checked + skipped
+    );
 }
 
 /// Samples are pixels x channels x bytes-per-sample. `geometry` is

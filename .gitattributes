@@ -1,0 +1,9 @@
+# Default: keep the line endings files were committed with.
+* text=auto eol=lf
+
+# Corpus files are binary and are compared byte for byte. A checkout that
+# rewrote line endings inside them would corrupt the pixel data and break
+# every corpus test on Windows. These come after the default deliberately --
+# in gitattributes the last matching rule wins.
+*.xisf -text -diff
+*.bmp  -text -diff
