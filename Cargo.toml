@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/xisf-core",
+    "crates/xisf",
+    "crates/xisf-c",
+    "crates/xisf-cli",
+]
+
+[workspace.package]
+# Each crate carries its own version and is released on its own cadence.
+edition = "2024"
+rust-version = "1.90"
+license = "MIT"
+repository = "https://github.com/cruzzil/xisf"
+authors = ["The xisf-rs Developers"]
+
+[workspace.dependencies]
+xisf-core = { path = "crates/xisf-core", version = "0.1.0" }
+
+quick-xml = "0.38"
+thiserror = "2"
+base64 = "0.22"
+flate2 = "1"
+lz4_flex = "0.11"
+sha1 = "0.10"
+sha2 = "0.10"
+sha3 = "0.10"
+memmap2 = "0.9"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[profile.release]
+lto = "thin"
