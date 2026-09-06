@@ -282,6 +282,96 @@ fn parse_bounds(text: &str) -> Result<Bounds> {
     Ok(Bounds { low, high })
 }
 
+/// The unit an image's resolution is measured in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ResolutionUnit {
+    /// Pixels per inch, and the spec's default when no `unit` is given.
+    #[default]
+    Inch,
+    /// Pixels per centimetre.
+    Centimetre,
+}
+
+impl ResolutionUnit {
+    pub fn parse(name: &str) -> Option<Self> {
+        Some(match name {
+            "inch" => ResolutionUnit::Inch,
+            "cm" => ResolutionUnit::Centimetre,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ResolutionUnit::Inch => "inch",
+            ResolutionUnit::Centimetre => "cm",
+        }
+    }
+}
+
+/// A `<Resolution>` element: how many pixels there are per unit of length.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Resolution {
+    pub horizontal: f64,
+    pub vertical: f64,
+    pub unit: ResolutionUnit,
+}
+
+impl Resolution {
+    /// Parse a `<Resolution>` element.
+    pub fn parse(element: &Element) -> Result<Self> {
+        if element.name != "Resolution" {
+            return Err(err!(InvalidArgument, "expected <Resolution>, got <{}>", element.name));
+        }
+        let number = |name: &str| -> Result<f64> {
+            let text =
+                element.attr(name).ok_or_else(|| err!(BadHeader, "<Resolution> has no {name}"))?;
+            let value = text
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| err!(BadAttribute, "<Resolution> {name}={text:?} is not a number"))?;
+            if !value.is_finite() || value <= 0.0 {
+                return Err(err!(
+                    BadAttribute,
+                    "<Resolution> {name} must be positive, got {value}"
+                ));
+            }
+            Ok(value)
+        };
+
+        let unit = match element.attr("unit") {
+            None => ResolutionUnit::default(),
+            Some(name) => ResolutionUnit::parse(name)
+                .ok_or_else(|| err!(Unsupported, "unknown resolution unit {name:?}"))?,
+        };
+        Ok(Resolution { horizontal: number("horizontal")?, vertical: number("vertical")?, unit })
+    }
+
+    /// The resolution in pixels per inch, whatever unit it was written in.
+    pub fn per_inch(&self) -> (f64, f64) {
+        match self.unit {
+            ResolutionUnit::Inch => (self.horizontal, self.vertical),
+            ResolutionUnit::Centimetre => (self.horizontal * 2.54, self.vertical * 2.54),
+        }
+    }
+}
+
+/// A `<Thumbnail>`: a small preview, which is an image in its own right.
+///
+/// Parsed with the same code as an `<Image>`, because it *is* one -- same
+/// geometry, sample format, colour space and data block. Only the element
+/// name and its role differ.
+pub fn parse_thumbnail(element: &Element) -> Result<Image> {
+    if element.name != "Thumbnail" {
+        return Err(err!(InvalidArgument, "expected <Thumbnail>, got <{}>", element.name));
+    }
+    // `Image::parse` checks the element name, so it is parsed from a copy
+    // renamed to match rather than by duplicating every attribute rule.
+    let mut as_image = element.clone();
+    as_image.name = "Image".to_string();
+    Image::parse(&as_image)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +424,57 @@ mod tests {
 
     /// Zero dimensions and unknown enum values are refused rather than
     /// defaulted, because both would silently misread the pixel data.
+    #[test]
+    fn resolution_defaults_to_pixels_per_inch() {
+        let xml = r#"<xisf version="1.0"><Resolution horizontal="120" vertical="96"/></xisf>"#;
+        let header = header::parse(xml).unwrap();
+        let r = Resolution::parse(&header.root.children[0]).unwrap();
+        assert_eq!(r.unit, ResolutionUnit::Inch);
+        assert_eq!(r.per_inch(), (120.0, 96.0));
+    }
+
+    #[test]
+    fn centimetre_resolutions_convert() {
+        let xml =
+            r#"<xisf version="1.0"><Resolution horizontal="100" vertical="100" unit="cm"/></xisf>"#;
+        let header = header::parse(xml).unwrap();
+        let r = Resolution::parse(&header.root.children[0]).unwrap();
+        assert_eq!(r.unit, ResolutionUnit::Centimetre);
+        assert_eq!(r.per_inch(), (254.0, 254.0));
+    }
+
+    #[test]
+    fn a_nonsensical_resolution_is_refused() {
+        for attrs in [
+            r#"horizontal="0" vertical="1""#,
+            r#"horizontal="-5" vertical="1""#,
+            r#"horizontal="1""#,
+            r#"horizontal="x" vertical="1""#,
+            r#"horizontal="1" vertical="1" unit="furlong""#,
+        ] {
+            let xml = format!(r#"<xisf version="1.0"><Resolution {attrs}/></xisf>"#);
+            let header = header::parse(&xml).unwrap();
+            assert!(
+                Resolution::parse(&header.root.children[0]).is_err(),
+                "{attrs} should have been refused"
+            );
+        }
+    }
+
+    /// A thumbnail is an image, and is parsed by the same rules rather than a
+    /// second implementation of them.
+    #[test]
+    fn a_thumbnail_parses_as_an_image() {
+        let xml = r#"<xisf version="1.0"><Thumbnail geometry="400:300:3" sampleFormat="UInt8"
+                     colorSpace="RGB" location="attachment:8192:360000"/></xisf>"#;
+        let header = header::parse(xml).unwrap();
+        let thumbnail = parse_thumbnail(&header.root.children[0]).unwrap();
+        assert_eq!(thumbnail.dimensions, vec![400, 300]);
+        assert_eq!(thumbnail.channels, 3);
+        assert_eq!(thumbnail.sample_format, SampleFormat::UInt8);
+        assert_eq!(thumbnail.data_size(), Some(400 * 300 * 3));
+    }
+
     #[test]
     fn nonsense_geometry_and_unknown_values_are_refused() {
         for attrs in [

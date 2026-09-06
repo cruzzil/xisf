@@ -33,7 +33,9 @@ use xisf_core::reader::ChecksumStatus;
 
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
-pub use xisf_core::image::{Bounds, ColorSpace, Image, PixelStorage, SampleFormat};
+pub use xisf_core::image::{
+    Bounds, ColorSpace, Image, PixelStorage, Resolution, ResolutionUnit, SampleFormat,
+};
 pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
 pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
 
@@ -238,6 +240,73 @@ impl<'a> ImageRef<'a> {
     /// Where the image's data lives, for callers that care.
     pub fn location(&self) -> Option<&Location> {
         self.element.data.location.as_ref()
+    }
+
+    /// The image's declared resolution, if it states one.
+    pub fn resolution(&self) -> Option<Resolution> {
+        self.element.children_named("Resolution").find_map(|e| Resolution::parse(e).ok())
+    }
+
+    /// The image's embedded ICC colour profile, if it has one.
+    ///
+    /// Returned as raw bytes because that is what an ICC profile is: a
+    /// self-describing structure this crate has no business interpreting.
+    /// Note that it is **big-endian** by the ICC specification, which is the
+    /// one place XISF departs from its own little-endian default -- and why
+    /// the format forbids a `byteOrder` attribute here. Nothing is swapped;
+    /// the bytes are handed over exactly as stored, which is what an ICC
+    /// library expects.
+    pub fn icc_profile(&self) -> Option<Result<Cow<'a, [u8]>>> {
+        let element = self.element.children_named("ICCProfile").next()?;
+        Some(self.file.reader.block(&element.data))
+    }
+
+    /// The image's thumbnail, if it carries one.
+    pub fn thumbnail(&self) -> Option<ThumbnailRef<'a>> {
+        let element = self.element.children_named("Thumbnail").next()?;
+        let image = xisf_core::image::parse_thumbnail(element).ok()?;
+        Some(ThumbnailRef { file: self.file, element, image })
+    }
+}
+
+/// An image's thumbnail: a small preview, which is an image in its own right.
+#[derive(Debug)]
+pub struct ThumbnailRef<'a> {
+    file: &'a XisfFile,
+    element: &'a Element,
+    image: Image,
+}
+
+impl<'a> ThumbnailRef<'a> {
+    /// The thumbnail's dimensions, without the channel count.
+    pub fn geometry(&self) -> &[u64] {
+        &self.image.dimensions
+    }
+
+    /// How many channels the thumbnail has.
+    pub fn channels(&self) -> u64 {
+        self.image.channels
+    }
+
+    /// The type of one sample. Thumbnails are conventionally `UInt8`, which
+    /// is what makes them cheap to display whatever the image's own format.
+    pub fn sample_format(&self) -> SampleFormat {
+        self.image.sample_format
+    }
+
+    /// The colour space the thumbnail's channels are in.
+    pub fn color_space(&self) -> ColorSpace {
+        self.image.color_space
+    }
+
+    /// The parsed attributes.
+    pub fn attributes(&self) -> &Image {
+        &self.image
+    }
+
+    /// The thumbnail's pixel data, decompressed.
+    pub fn bytes(&self) -> Result<Cow<'a, [u8]>> {
+        self.file.reader.block(&self.element.data)
     }
 }
 

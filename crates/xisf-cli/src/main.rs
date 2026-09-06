@@ -141,6 +141,37 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 image.bounds().map_or(String::new(), |b| format!(", bounds {}:{}", b.low, b.high))
             );
 
+            if let Some(resolution) = image.resolution() {
+                let (x, y) = resolution.per_inch();
+                println!(
+                    "       resolution {} x {} per {}{}",
+                    resolution.horizontal,
+                    resolution.vertical,
+                    resolution.unit.name(),
+                    if resolution.unit == xisf::ResolutionUnit::Inch {
+                        String::new()
+                    } else {
+                        format!(" ({x:.1} x {y:.1} ppi)")
+                    }
+                );
+            }
+            if let Some(thumbnail) = image.thumbnail() {
+                let geometry: Vec<String> =
+                    thumbnail.geometry().iter().map(u64::to_string).collect();
+                println!(
+                    "       thumbnail {}, {} channel(s), {}",
+                    geometry.join(" x "),
+                    thumbnail.channels(),
+                    thumbnail.sample_format().name()
+                );
+            }
+            if let Some(profile) = image.icc_profile() {
+                match profile {
+                    Ok(bytes) => println!("       ICC profile, {} bytes", bytes.len()),
+                    Err(e) => println!("       ICC profile: unreadable ({e})"),
+                }
+            }
+
             if options.verbose {
                 for (name, value, comment) in image.fits_keywords() {
                     let comment =

@@ -275,9 +275,10 @@ Still open:
 
 - Writing distributed units from `Writer` (the pieces exist in
   `distributed::write_blocks_file`).
-- Properties serialised as data blocks: vectors, matrices and tables. The type
-  system is implemented; reading their blocks is not.
-- `ICCProfile`, `Thumbnail` and `ColorFilterArray` elements.
+- ~~Properties serialised as data blocks~~ — done for vectors and matrices.
+  `Table` remains, which is a separate core element rather than a `Property`.
+- ~~`ICCProfile`, `Thumbnail`~~ and `Resolution` — done. `ColorFilterArray`
+  and `DisplayFunction` remain; no corpus file carries either.
 - `url:` locators, which need an HTTP client and a decision about whether a
   library should fetch anything at all.
 - XML digital signatures, deliberately out of scope for 1.0.
