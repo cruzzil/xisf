@@ -8,7 +8,7 @@
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use crate::block::{Checksum, Compression, Location};
+use crate::block::{ByteOrder, Checksum, Compression, Location};
 use crate::err;
 use crate::error::Result;
 
@@ -21,6 +21,10 @@ pub struct DataRef {
     pub location: Option<Location>,
     pub compression: Option<Compression>,
     pub checksum: Option<Checksum>,
+    /// Byte order of the block's multi-byte values. Little-endian when the
+    /// attribute is absent, which is the spec's default rather than the
+    /// host's order.
+    pub byte_order: ByteOrder,
     /// Character data, for `inline` and `embedded` blocks. Held as written;
     /// whitespace is insignificant in both encodings and is stripped on use.
     pub text: Option<String>,
@@ -249,6 +253,7 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
             "location" => data.location = Some(Location::parse(&value)?),
             "compression" => data.compression = Some(Compression::parse(&value)?),
             "checksum" => data.checksum = Some(Checksum::parse(&value)?),
+            "byteOrder" => data.byte_order = ByteOrder::parse(&value)?,
             _ => {}
         }
         attributes.push((key, value));

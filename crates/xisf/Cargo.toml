@@ -1,0 +1,27 @@
+[package]
+name = "xisf"
+description = "Reading and writing XISF (Extensible Image Serialization Format) files"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+xisf-core.workspace = true
+
+[dev-dependencies]
+divan = "0.1.21"
+xisf-core.workspace = true
+# A third, independent implementation, used only as a test oracle. Apache-2.0,
+# and a dev-dependency, so it is absent from what a consumer builds. Nothing
+# is copied from it.
+seiza-xisf = "0.2"
+
+[[bench]]
+name = "throughput"
+harness = false
+
+[lints]
+workspace = true

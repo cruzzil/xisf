@@ -102,6 +102,43 @@ impl Location {
     }
 }
 
+/// The byte order a data block's multi-byte values are stored in.
+///
+/// The spec makes the attribute optional and little-endian the default, so a
+/// block with no `byteOrder` is little-endian regardless of the host. It also
+/// says the attribute is unnecessary for blocks with no multi-byte structure
+/// -- byte vectors, UTF-8 strings, 8-bit images -- and must never appear on an
+/// `ICCProfile`, whose own specification fixes it as big-endian.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ByteOrder {
+    #[default]
+    Little,
+    Big,
+}
+
+impl ByteOrder {
+    pub fn parse(name: &str) -> Result<Self> {
+        Ok(match name {
+            "little" => ByteOrder::Little,
+            "big" => ByteOrder::Big,
+            other => return Err(err!(BadAttribute, "unknown byteOrder {other:?}")),
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            ByteOrder::Little => "little",
+            ByteOrder::Big => "big",
+        }
+    }
+
+    /// Whether this is the order this machine uses, in which case multi-byte
+    /// values need no swapping.
+    pub fn is_native(self) -> bool {
+        (self == ByteOrder::Little) == cfg!(target_endian = "little")
+    }
+}
+
 /// A compression codec.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Codec {
@@ -357,6 +394,17 @@ mod tests {
         for text in ["", "inline", "inline:utf8", "attachment", "attachment:1", "url:", "wat"] {
             assert!(Location::parse(text).is_err(), "{text:?} should not parse");
         }
+    }
+
+    #[test]
+    fn byte_order_defaults_to_little_endian() {
+        // The spec's default, which is a property of the format rather than
+        // of the machine reading it.
+        assert_eq!(ByteOrder::default(), ByteOrder::Little);
+        assert_eq!(ByteOrder::parse("little").unwrap(), ByteOrder::Little);
+        assert_eq!(ByteOrder::parse("big").unwrap(), ByteOrder::Big);
+        assert!(ByteOrder::parse("network").is_err());
+        assert!(ByteOrder::parse("Little").is_err(), "the spelling is lower case");
     }
 
     #[test]

@@ -1,0 +1,379 @@
+//! Reading and writing XISF files.
+//!
+//! XISF is the Extensible Image Serialization Format: an XML header naming
+//! images and properties, followed by the binary blocks that hold them.
+//!
+//! ```no_run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! use xisf::XisfFile;
+//!
+//! let file = XisfFile::open("image.xisf")?;
+//! for image in file.images() {
+//!     println!("{:?} {}", image.geometry(), image.sample_format().name());
+//!     let pixels: Vec<u16> = image.read()?;
+//!     println!("  {} samples", pixels.len());
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! This crate is the ergonomic face of [`xisf_core`], which does the work. It
+//! is written from the published XISF specification; nothing here derives from
+//! libXISF or from the PixInsight Class Library.
+
+#![warn(missing_docs)]
+
+use std::borrow::Cow;
+use std::path::Path;
+
+use xisf_core::Reader;
+use xisf_core::block::{ByteOrder, Location};
+use xisf_core::header::Element;
+use xisf_core::reader::ChecksumStatus;
+
+pub use xisf_core::block::ChecksumAlgorithm;
+pub use xisf_core::error::{Error, ErrorKind, Result};
+pub use xisf_core::image::{Bounds, ColorSpace, Image, PixelStorage, SampleFormat};
+pub use xisf_core::property::{PropertyType, Scalar, Shape};
+pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
+
+/// An open XISF file.
+#[derive(Debug)]
+pub struct XisfFile {
+    reader: Reader,
+}
+
+impl XisfFile {
+    /// Open a file from disk. Its data blocks are memory-mapped, so nothing
+    /// is read until it is asked for.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self { reader: Reader::open(path)? })
+    }
+
+    /// Read a file already in memory.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
+        Ok(Self { reader: Reader::from_bytes(bytes)? })
+    }
+
+    /// The images the file holds, in the order the header names them.
+    pub fn images(&self) -> Vec<ImageRef<'_>> {
+        self.reader
+            .header()
+            .images()
+            .into_iter()
+            .filter_map(|element| {
+                Image::parse(element).ok().map(|image| ImageRef { file: self, element, image })
+            })
+            .collect()
+    }
+
+    /// The file's `XISF:`-namespaced metadata properties, as text.
+    pub fn metadata(&self) -> Vec<(String, String)> {
+        self.reader
+            .header()
+            .root
+            .descendants()
+            .into_iter()
+            .filter(|e| e.name == "Property")
+            .filter_map(|e| {
+                let id = e.attr("id")?.to_string();
+                let value = e.attr("value").map(str::to_owned).or_else(|| e.data.text.clone())?;
+                Some((id, value))
+            })
+            .collect()
+    }
+
+    /// The underlying engine reader, for anything this API does not cover.
+    pub fn reader(&self) -> &Reader {
+        &self.reader
+    }
+}
+
+/// One image in a file.
+#[derive(Debug)]
+pub struct ImageRef<'a> {
+    file: &'a XisfFile,
+    element: &'a Element,
+    image: Image,
+}
+
+impl<'a> ImageRef<'a> {
+    /// The image's dimensions, fastest-varying first, without the channel
+    /// count.
+    pub fn geometry(&self) -> &[u64] {
+        &self.image.dimensions
+    }
+
+    /// How many channels the image has.
+    pub fn channels(&self) -> u64 {
+        self.image.channels
+    }
+
+    /// The type of one sample.
+    pub fn sample_format(&self) -> SampleFormat {
+        self.image.sample_format
+    }
+
+    /// The colour space the channels are in.
+    pub fn color_space(&self) -> ColorSpace {
+        self.image.color_space
+    }
+
+    /// How channels are interleaved.
+    pub fn pixel_storage(&self) -> PixelStorage {
+        self.image.pixel_storage
+    }
+
+    /// The range floating-point samples are scaled to, if declared.
+    pub fn bounds(&self) -> Option<Bounds> {
+        self.image.bounds
+    }
+
+    /// The parsed `<Image>` attributes.
+    pub fn attributes(&self) -> &Image {
+        &self.image
+    }
+
+    /// The byte order the samples are stored in.
+    pub fn byte_order(&self) -> ByteOrder {
+        self.element.data.byte_order
+    }
+
+    /// Whether the pixel data is compressed, and how.
+    pub fn is_compressed(&self) -> bool {
+        self.element.data.compression.is_some()
+    }
+
+    /// The image's pixel data, decompressed, in the order it was stored.
+    ///
+    /// Borrowed straight from the mapping when the block is attached and
+    /// uncompressed, so this costs nothing in the common case.
+    pub fn bytes(&self) -> Result<Cow<'a, [u8]>> {
+        self.file.reader.block(&self.element.data)
+    }
+
+    /// Check the recorded checksum, if the image has one.
+    pub fn verify(&self) -> Result<ChecksumStatus> {
+        self.file.reader.verify(&self.element.data)
+    }
+
+    /// The image's FITS keywords, as `(name, value, comment)`.
+    pub fn fits_keywords(&self) -> Vec<(String, String, String)> {
+        self.element
+            .children_named("FITSKeyword")
+            .map(|k| {
+                (
+                    k.attr("name").unwrap_or_default().to_string(),
+                    k.attr("value").unwrap_or_default().to_string(),
+                    k.attr("comment").unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    /// Read the pixel data as `T`.
+    ///
+    /// `T` must be the image's own sample type; this converts byte order, not
+    /// sample formats. Ask a `Float32` image for `u16` and it says so rather
+    /// than quietly reinterpreting the bytes.
+    ///
+    /// When the stored order already matches the machine's, the samples are
+    /// bulk-copied rather than decoded one at a time -- for a large image
+    /// that is the difference between a memory copy and a loop over tens of
+    /// millions of values.
+    pub fn read<T: Sample>(&self) -> Result<Vec<T>> {
+        if self.image.sample_format != T::FORMAT {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "this image holds {} samples; asked for {}",
+                    self.image.sample_format.name(),
+                    T::FORMAT.name()
+                ),
+            ));
+        }
+
+        let bytes = self.bytes()?;
+        let expected = self.image.data_size().ok_or_else(|| {
+            Error::new(ErrorKind::Unsupported, "the image's geometry overflows this platform")
+        })?;
+        if bytes.len() as u64 != expected {
+            return Err(Error::new(
+                ErrorKind::Truncated,
+                format!("the image declares {expected} bytes of pixel data, found {}", bytes.len()),
+            ));
+        }
+
+        Ok(T::decode(&bytes, self.byte_order()))
+    }
+
+    /// Where the image's data lives, for callers that care.
+    pub fn location(&self) -> Option<&Location> {
+        self.element.data.location.as_ref()
+    }
+}
+
+/// A pixel sample type that can be read in bulk.
+///
+/// Sealed: the set is fixed by the format's `sampleFormat` values, and adding
+/// to it would mean adding to the format.
+pub trait Sample: sealed::Sealed + Copy {
+    /// The `sampleFormat` this type corresponds to.
+    const FORMAT: SampleFormat;
+
+    /// Decode a whole buffer of samples stored in `order`.
+    #[doc(hidden)]
+    fn decode(bytes: &[u8], order: ByteOrder) -> Vec<Self>;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+macro_rules! sample {
+    ($ty:ty, $format:ident) => {
+        impl sealed::Sealed for $ty {}
+        impl Sample for $ty {
+            const FORMAT: SampleFormat = SampleFormat::$format;
+
+            fn decode(bytes: &[u8], order: ByteOrder) -> Vec<Self> {
+                let (chunks, _) = bytes.as_chunks::<{ size_of::<$ty>() }>();
+                match order {
+                    ByteOrder::Big => chunks.iter().map(|c| <$ty>::from_be_bytes(*c)).collect(),
+                    ByteOrder::Little => chunks.iter().map(|c| <$ty>::from_le_bytes(*c)).collect(),
+                }
+            }
+        }
+    };
+}
+
+sample!(u8, UInt8);
+sample!(u16, UInt16);
+sample!(u32, UInt32);
+sample!(u64, UInt64);
+sample!(f32, Float32);
+sample!(f64, Float64);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use xisf_core::writer::{PendingImage, Writer};
+
+    fn write(image: Image, data: Vec<u8>) -> XisfFile {
+        let mut writer = Writer::new();
+        writer
+            .add_image(PendingImage { image, data, options: BlockOptions::default() })
+            .expect("add_image");
+        XisfFile::from_bytes(writer.to_bytes().expect("to_bytes")).expect("read back")
+    }
+
+    fn image(format: SampleFormat, channels: u64) -> Image {
+        Image {
+            dimensions: vec![5, 4],
+            channels,
+            sample_format: format,
+            color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
+            pixel_storage: PixelStorage::Planar,
+            bounds: None,
+            id: None,
+            uuid: None,
+            image_type: None,
+        }
+    }
+
+    #[test]
+    fn reads_samples_of_the_right_type() {
+        let values: Vec<u16> = (0..20u16).map(|i| i * 1000).collect();
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let file = write(image(SampleFormat::UInt16, 1), bytes);
+
+        let read: Vec<u16> = file.images()[0].read().expect("read");
+        assert_eq!(read, values);
+    }
+
+    /// Asking for the wrong type is an error, not a reinterpretation. Silently
+    /// treating float bits as integers is the kind of thing that produces
+    /// plausible-looking nonsense.
+    #[test]
+    fn the_wrong_sample_type_is_refused() {
+        let file = write(image(SampleFormat::Float32, 1), vec![0; 80]);
+        let err = file.images()[0].read::<u16>().unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+        assert!(err.message().contains("Float32"), "the message should name both types");
+    }
+
+    /// The stored order is the format's, not the machine's: a big-endian
+    /// block reads the same on any host.
+    #[test]
+    fn big_endian_blocks_are_byte_swapped() {
+        let values: Vec<u32> = vec![1, 0x0102_0304, u32::MAX, 42];
+        let big: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+        let xml = format!(
+            r#"<xisf version="1.0"><Image geometry="4:1:1" sampleFormat="UInt32" \
+byteOrder="big" location="inline:base64">{}</Image></xisf>"#,
+            base64_encode(&big)
+        );
+        let file = XisfFile::from_bytes(monolithic(&xml)).expect("read");
+        let read: Vec<u32> = file.images()[0].read().expect("read");
+        assert_eq!(read, values, "a big-endian block must not depend on the host");
+        assert_eq!(file.images()[0].byte_order(), ByteOrder::Big);
+    }
+
+    /// And with no attribute at all the block is little-endian, per the spec,
+    /// whatever the host happens to be.
+    #[test]
+    fn an_absent_byte_order_means_little_endian() {
+        let values: Vec<u32> = vec![0x0a0b_0c0d, 7];
+        let little: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let xml = format!(
+            r#"<xisf version="1.0"><Image geometry="2:1:1" sampleFormat="UInt32" \
+location="inline:base64">{}</Image></xisf>"#,
+            base64_encode(&little)
+        );
+        let file = XisfFile::from_bytes(monolithic(&xml)).expect("read");
+        assert_eq!(file.images()[0].byte_order(), ByteOrder::Little);
+        assert_eq!(file.images()[0].read::<u32>().unwrap(), values);
+    }
+
+    #[test]
+    fn geometry_and_metadata_come_through() {
+        let file = write(image(SampleFormat::UInt8, 3), vec![0; 60]);
+        let images = file.images();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].geometry(), &[5, 4]);
+        assert_eq!(images[0].channels(), 3);
+        assert_eq!(images[0].color_space(), ColorSpace::Rgb);
+    }
+
+    // --- helpers -----------------------------------------------------
+
+    fn monolithic(xml: &str) -> Vec<u8> {
+        let xml = xml.replace("\\\n", "");
+        let mut out = Vec::new();
+        out.extend_from_slice(b"XISF0100");
+        out.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(xml.as_bytes());
+        out
+    }
+
+    fn base64_encode(bytes: &[u8]) -> String {
+        const TABLE: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+            let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+            let digits = [n >> 18, (n >> 12) & 63, (n >> 6) & 63, n & 63];
+            for (i, d) in digits.iter().enumerate() {
+                if i <= chunk.len() {
+                    out.push(TABLE[*d as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+}
