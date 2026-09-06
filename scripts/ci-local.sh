@@ -20,7 +20,11 @@ run "no default features"    cargo test -p xisf-core --no-default-features
 for feature in zlib lz4 zstd checksums; do
     run "feature: $feature"  cargo test -p xisf-core --no-default-features --features "$feature"
 done
-RUSTDOCFLAGS="-D warnings" run "docs" cargo doc --workspace --no-deps
+# Two invocations: `libxisf`'s library target must be named `xisf` so the
+# artifact is `libxisf.so`, which collides in rustdoc's output with the `xisf`
+# library. They get separate trees.
+RUSTDOCFLAGS="-D warnings" run "docs" cargo doc --workspace --exclude libxisf --no-deps
+RUSTDOCFLAGS="-D warnings" run "docs (C ABI)" cargo doc -p libxisf --no-deps --target-dir target/doc-capi
 
 if [ -n "${XISF_VERIFY:-}" ]; then
     run "round-trip through libXISF" cargo test -p xisf-core --test round_trip_libxisf

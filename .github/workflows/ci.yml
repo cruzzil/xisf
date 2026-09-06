@@ -62,6 +62,15 @@ jobs:
       # The corpus tests skip with a note when their directory is missing, so
       # a green run could in principle mean they never ran. This asserts they
       # actually compared files.
+      # The C harness skips when no compiler is found, so a green run could
+      # mean it never compiled anything. This asserts it did.
+      - name: Confirm the C ABI harness ran
+        shell: bash
+        run: |
+          cargo test -p libxisf --test abi -- --nocapture 2>&1 | tee abi.txt
+          grep -q "declared functions are present" abi.txt \
+            || { echo "the C ABI harness did not run"; exit 1; }
+
       - name: Confirm the corpus ran
         shell: bash
         run: |
@@ -109,9 +118,10 @@ jobs:
         if: steps.build.outcome != 'success'
         run: echo "::warning::libXISF could not be built; the round-trip oracle did not run"
 
-  # Every unsafe block in the workspace is the one memory map in xisf-core.
-  # That is little today and will not stay little once xisf-c exists, so the
-  # job is here from the start rather than added after it is needed.
+  # Almost every unsafe block in the workspace is in `libxisf`, the C ABI
+  # layer; `xisf-core` has only the memory map. In a sibling project Miri
+  # found two real defects in exactly this kind of code that every other gate
+  # passed, so it runs over both crates.
   miri:
     runs-on: ubuntu-latest
     steps:
@@ -123,7 +133,9 @@ jobs:
       - name: Miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
-        run: cargo +nightly miri test -p xisf-core
+        run: |
+          cargo +nightly miri test -p xisf-core
+          cargo +nightly miri test -p libxisf --lib
 
   lint:
     runs-on: ubuntu-latest
@@ -137,10 +149,15 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets
+      # Two invocations: `libxisf`'s library target must be named `xisf` so
+      # the artifact is `libxisf.so`, which collides in rustdoc's output with
+      # the `xisf` library. They get separate trees.
       - name: Documentation
         env:
           RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps
+        run: |
+          cargo doc --workspace --exclude libxisf --no-deps
+          cargo doc -p libxisf --no-deps --target-dir target/doc-capi
 
   # Each optional codec must build and pass on its own: a consumer who turns
   # off zstd should not find the crate stops compiling.

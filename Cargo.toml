@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/xisf-core",
     "crates/xisf",
+    "crates/libxisf",
 ]
 
 [workspace.package]

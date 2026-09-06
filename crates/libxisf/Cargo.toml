@@ -1,0 +1,26 @@
+[package]
+name = "libxisf"
+description = "C ABI for reading XISF (Extensible Image Serialization Format) files"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# The target name decides the artifact names: `libxisf.so` and `libxisf.a`.
+# This collides with the `xisf` crate's rlib in cargo's output directory, which
+# is harmless -- the two are never linked together -- and is the price of the
+# artifact having the name a C caller expects.
+name = "xisf"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+xisf-core.workspace = true
+
+[dev-dependencies]
+xisf-core.workspace = true
+
+[lints]
+workspace = true
