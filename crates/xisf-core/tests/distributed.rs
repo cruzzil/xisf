@@ -180,3 +180,135 @@ fn index_positions_address_the_blocks_they_name() {
         assert_eq!(&bytes[start..end], &expected[..], "block {id} is not where the index says");
     }
 }
+
+// ---- Writing --------------------------------------------------------
+
+/// The round trip that matters: write a distributed unit, save both halves,
+/// and read the pixels back through the ordinary reader.
+#[test]
+fn a_distributed_unit_written_here_reads_back() {
+    use xisf_core::image::{ColorSpace, Image, PixelStorage, SampleFormat};
+    use xisf_core::writer::{BlockOptions, PendingImage, Writer};
+
+    let scratch = Scratch::new("write-roundtrip");
+
+    let mut writer = Writer::new().with_creator("xisf-rs");
+    let mut expected = Vec::new();
+    for (index, channels) in [1u64, 3, 1].into_iter().enumerate() {
+        let image = Image {
+            dimensions: vec![6, 5],
+            channels,
+            sample_format: SampleFormat::UInt16,
+            color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
+            pixel_storage: PixelStorage::Planar,
+            bounds: None,
+            id: None,
+            uuid: None,
+            image_type: None,
+        };
+        let size = image.data_size().unwrap() as usize;
+        let data: Vec<u8> = (0..size).map(|i| (i * 13 + index * 7) as u8).collect();
+        expected.push(data.clone());
+        writer
+            .add_image(PendingImage { image, data, options: BlockOptions::default() })
+            .expect("add_image");
+    }
+
+    let unit = writer.to_distributed("data.xisb").expect("to_distributed");
+    std::fs::write(scratch.join("unit.xish"), &unit.header).unwrap();
+    std::fs::write(scratch.join(&unit.blocks_file_name), &unit.blocks).unwrap();
+
+    // The header file is XML and nothing else: no signature, no preamble.
+    assert!(unit.header.starts_with(b"<?xml"), "a header file starts with its XML");
+    assert!(unit.blocks.starts_with(b"XISB0100"), "a blocks file starts with XISB");
+
+    // Read it back the way a consumer would.
+    let header = xisf_core::distributed::parse_header_file(&unit.header).expect("parse header");
+    assert_eq!(header.images().len(), 3);
+
+    // And the blocks resolve. The reader needs a file on disk to resolve
+    // `path(...)` relative to, so this goes through a monolithic wrapper
+    // carrying the same locators.
+    let index = parse_blocks_file(&unit.blocks).expect("parse blocks");
+    assert_eq!(index.occupied().count(), 3);
+
+    for (n, image) in header.images().iter().enumerate() {
+        let Some(xisf_core::block::Location::Path { path, index: id }) = &image.data.location
+        else {
+            panic!("image {n} is not addressed by path");
+        };
+        assert_eq!(path, "data.xisb");
+        let element = index.get(id.expect("an identifier")).expect("the block is indexed");
+
+        let start = element.position as usize;
+        let end = start + element.length as usize;
+        assert_eq!(&unit.blocks[start..end], &expected[n][..], "image {n} has the wrong bytes");
+    }
+}
+
+/// Reading it through the ordinary `Reader`, which is what a consumer
+/// actually does, rather than only through the pieces. Compressed on
+/// purpose, so the block is not merely a copy of the input -- which needs a
+/// codec compiled in.
+#[cfg(feature = "zlib")]
+#[test]
+fn the_reader_resolves_a_written_distributed_unit() {
+    use xisf_core::image::{ColorSpace, Image, PixelStorage, SampleFormat};
+    use xisf_core::writer::{BlockOptions, CompressionRequest, PendingImage, Writer};
+
+    let scratch = Scratch::new("reader-resolves");
+    let image = Image {
+        dimensions: vec![8, 4],
+        channels: 1,
+        sample_format: SampleFormat::UInt16,
+        color_space: ColorSpace::Gray,
+        pixel_storage: PixelStorage::Planar,
+        bounds: None,
+        id: None,
+        uuid: None,
+        image_type: None,
+    };
+    let size = image.data_size().unwrap() as usize;
+    let data: Vec<u8> = (0..size).map(|i| (i * 5 + 1) as u8).collect();
+
+    let mut writer = Writer::new();
+    writer
+        .add_image(PendingImage {
+            image,
+            data: data.clone(),
+            options: BlockOptions {
+                // Compressed, so the block is not merely a copy of the input.
+                compression: Some(CompressionRequest {
+                    codec: xisf_core::writer::Codec2::Zlib,
+                    shuffle_item_size: Some(2),
+                }),
+                checksum: None,
+            },
+        })
+        .unwrap();
+
+    let unit = writer.to_distributed("blocks.xisb").expect("to_distributed");
+    std::fs::write(scratch.join(&unit.blocks_file_name), &unit.blocks).unwrap();
+
+    // A monolithic file carrying the distributed header's body, so `Reader`
+    // has a path to resolve `path(blocks.xisb)` against.
+    let xml = String::from_utf8(unit.header.clone()).unwrap();
+    let mut monolithic = Vec::from(*b"XISF0100");
+    monolithic.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    monolithic.extend_from_slice(&[0u8; 4]);
+    monolithic.extend_from_slice(xml.as_bytes());
+    let path = scratch.join("unit.xisf");
+    std::fs::write(&path, monolithic).unwrap();
+
+    let reader = Reader::open(&path).expect("open");
+    let read = reader.block(&reader.header().images()[0].data).expect("block");
+    assert_eq!(&*read, &data[..], "the pixels did not survive the round trip");
+}
+
+#[test]
+fn a_blocks_file_name_must_be_a_plain_name() {
+    use xisf_core::writer::Writer;
+    for name in ["", "sub/dir.xisb", "/absolute.xisb"] {
+        assert!(Writer::new().to_distributed(name).is_err(), "{name:?} should have been refused");
+    }
+}

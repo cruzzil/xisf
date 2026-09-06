@@ -66,6 +66,33 @@ impl Codec2 {
     }
 }
 
+/// How the header names its blocks.
+///
+/// The two XISF forms differ in exactly this and nothing else, so the header
+/// is rendered once and told how to address rather than written twice.
+#[derive(Clone, Copy, Debug)]
+enum Addressing<'a> {
+    /// Monolithic: `attachment:position:size`, an absolute offset into the
+    /// same file. Needs the position the data begins at, which is what makes
+    /// the fixed-point loop necessary.
+    Attached { data_at: usize },
+    /// Distributed: `path(name.xisb):0xID`, naming a block in a separate data
+    /// blocks file by its index identifier. No positions appear in the
+    /// header, so nothing has to converge.
+    Distributed { blocks_file: &'a str },
+}
+
+/// A distributed unit: an XISF header file and the data blocks file it names.
+#[derive(Clone, Debug)]
+pub struct DistributedUnit {
+    /// The `.xish` header file's contents: the XML header and nothing else.
+    pub header: Vec<u8>,
+    /// The `.xisb` data blocks file's contents.
+    pub blocks: Vec<u8>,
+    /// The blocks file's name, as the header refers to it.
+    pub blocks_file_name: String,
+}
+
 /// An image to write, with its pixel data.
 #[derive(Clone, Debug)]
 pub struct PendingImage {
@@ -127,9 +154,11 @@ impl Writer {
             self.images.iter().map(StoredBlock::prepare).collect::<Result<_>>()?;
 
         // Fixed point on the header length; see the module comment.
-        let mut assumed = self.render(&stored, PREAMBLE_LEN)?.len();
+        let mut assumed =
+            self.render(&stored, Addressing::Attached { data_at: PREAMBLE_LEN })?.len();
         let header = loop {
-            let header = self.render(&stored, PREAMBLE_LEN + assumed)?;
+            let header =
+                self.render(&stored, Addressing::Attached { data_at: PREAMBLE_LEN + assumed })?;
             if header.len() == assumed {
                 break header;
             }
@@ -155,8 +184,44 @@ impl Writer {
         Ok(out)
     }
 
-    /// Render the XML header, addressing blocks as if data begins at `data_at`.
-    fn render(&self, stored: &[StoredBlock], data_at: usize) -> Result<String> {
+    /// Serialise as a *distributed* unit: a header file and a blocks file.
+    ///
+    /// `blocks_file_name` is what the header will name, so it must be the
+    /// name the blocks file is actually saved under, and the two must end up
+    /// in the same directory. The reader resolves a relative locator beside
+    /// the file that named it.
+    ///
+    /// Unlike the monolithic form this needs no fixed point: the header names
+    /// blocks by identifier rather than by position, so its length does not
+    /// feed back into its contents.
+    pub fn to_distributed(&self, blocks_file_name: &str) -> Result<DistributedUnit> {
+        if blocks_file_name.is_empty() || blocks_file_name.contains('/') {
+            return Err(err!(
+                InvalidArgument,
+                "the blocks file name must be a plain file name, got {blocks_file_name:?}"
+            ));
+        }
+
+        let stored: Vec<StoredBlock> =
+            self.images.iter().map(StoredBlock::prepare).collect::<Result<_>>()?;
+
+        let blocks: Vec<(u64, Vec<u8>)> = stored
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block_id(index), block.bytes.clone()))
+            .collect();
+
+        let header =
+            self.render(&stored, Addressing::Distributed { blocks_file: blocks_file_name })?;
+        Ok(DistributedUnit {
+            header: header.into_bytes(),
+            blocks: crate::distributed::write_blocks_file(&blocks)?,
+            blocks_file_name: blocks_file_name.to_string(),
+        })
+    }
+
+    /// Render the XML header, naming blocks as `addressing` says.
+    fn render(&self, stored: &[StoredBlock], addressing: Addressing<'_>) -> Result<String> {
         let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
         xml.push_str(r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf" "#);
         xml.push_str(r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#);
@@ -164,8 +229,11 @@ impl Writer {
             r#"xsi:schemaLocation="http://www.pixinsight.com/xisf http://pixinsight.com/xisf/xisf-1.0.xsd">"#,
         );
 
-        let mut position = data_at;
-        for (pending, block) in self.images.iter().zip(stored) {
+        let mut position = match addressing {
+            Addressing::Attached { data_at } => data_at,
+            Addressing::Distributed { .. } => 0,
+        };
+        for (index, (pending, block)) in self.images.iter().zip(stored).enumerate() {
             let image = &pending.image;
             let mut geometry: Vec<String> = image.dimensions.iter().map(u64::to_string).collect();
             geometry.push(image.channels.to_string());
@@ -200,8 +268,24 @@ impl Writer {
                 ));
             }
 
-            xml.push_str(&format!(" location=\"attachment:{position}:{}\"/>", block.bytes.len()));
-            position += block.bytes.len();
+            match addressing {
+                Addressing::Attached { .. } => {
+                    xml.push_str(&format!(
+                        " location=\"attachment:{position}:{}\"/>",
+                        block.bytes.len()
+                    ));
+                    position += block.bytes.len();
+                }
+                Addressing::Distributed { blocks_file } => {
+                    // `path(name):0xID` -- the parenthesised form, and the
+                    // identifier in hexadecimal as the spec recommends.
+                    xml.push_str(&format!(
+                        " location=\"path({}):{:#x}\"/>",
+                        escape_attr(blocks_file),
+                        block_id(index)
+                    ));
+                }
+            }
         }
 
         // `<Metadata>` is required by the spec, and `XISF:CreationTime` and
@@ -226,6 +310,14 @@ impl Writer {
         xml.push_str("</xisf>");
         Ok(xml)
     }
+}
+
+/// The identifier the `n`th block is given in a data blocks file.
+///
+/// One-based: zero is a legal identifier, but it is also what an uninitialised
+/// field reads as, so starting at one makes a mistake visible.
+fn block_id(index: usize) -> u64 {
+    index as u64 + 1
 }
 
 /// A block after compression, ready to be addressed and written.

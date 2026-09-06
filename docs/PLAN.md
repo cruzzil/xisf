@@ -273,8 +273,9 @@ Plus, carried over from the ASDF project because they earned their place:
 
 Still open:
 
-- Writing distributed units from `Writer` (the pieces exist in
-  `distributed::write_blocks_file`).
+- ~~Writing distributed units from `Writer`~~ — done:
+  `Writer::to_distributed` returns the `.xish` header and the `.xisb` blocks
+  file, and a round trip through the ordinary `Reader` is tested.
 - ~~Properties serialised as data blocks~~ — done for vectors and matrices.
   `Table` remains, which is a separate core element rather than a `Property`.
 - ~~`ICCProfile`, `Thumbnail`~~ and `Resolution` — done. `ColorFilterArray`
