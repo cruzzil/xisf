@@ -263,10 +263,24 @@ Plus, carried over from the ASDF project because they earned their place:
    Gate: libXISF reads what we write (the XSD is unpublished; see above).
 5. ~~**`xisf`** — the idiomatic API, with benchmarks alongside.~~ Done; see
    `docs/PERFORMANCE.md`.
-6. **`xisf-c`** — the C ABI, its header, and a C conformance harness modelled
-   on the ASDF one. Miri from the first commit.
-7. **`xisf-cli`**.
-8. **Distributed (non-monolithic) XISF**, then optional extras.
+6. ~~**`xisf-c`**~~ — done, and named `libxisf` at the user's request. Its own
+   header, a C conformance harness compiling real C with `-Werror`, and Miri
+   from the first commit.
+7. ~~**`xisf-cli`**~~ — done: `info`, `header`, `verify`, `dump`.
+8. ~~**Distributed (non-monolithic) XISF**~~ — done for reading: `.xish`
+   header files, and `.xisb` data blocks files with their linked-list block
+   index. Writing a distributed unit is not wired into `Writer` yet.
+
+Still open:
+
+- Writing distributed units from `Writer` (the pieces exist in
+  `distributed::write_blocks_file`).
+- Properties serialised as data blocks: vectors, matrices and tables. The type
+  system is implemented; reading their blocks is not.
+- `ICCProfile`, `Thumbnail` and `ColorFilterArray` elements.
+- `url:` locators, which need an HTTP client and a decision about whether a
+  library should fetch anything at all.
+- XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known
 gap rather than left implicit.

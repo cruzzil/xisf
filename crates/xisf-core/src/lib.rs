@@ -20,6 +20,7 @@
 
 pub mod block;
 pub mod codec;
+pub mod distributed;
 pub mod error;
 pub mod header;
 pub mod image;

@@ -188,8 +188,9 @@ impl Reader {
                 Ok(Cow::Owned(decode_text(text, TextEncoding::Base64)?))
             }
 
-            Location::Path { path, .. } => {
-                Ok(Cow::Owned(std::fs::read(self.resolve_relative(path)?)?))
+            Location::Path { path, index } => {
+                let bytes = std::fs::read(self.resolve_relative(path)?)?;
+                Ok(Cow::Owned(extract_external(bytes, *index, path)?))
             }
             Location::Url { url, .. } => {
                 Err(err!(Unsupported, "external URL blocks are not read: {url}"))
@@ -249,6 +250,59 @@ impl Reader {
         }
         Ok(base.join(candidate))
     }
+}
+
+/// Take one block out of an external file.
+///
+/// Two shapes are legal here and they are told apart by the file itself. An
+/// XISF *data blocks file* begins with `XISB0100` and holds an index naming
+/// each block by identifier; the locator's trailing number is that
+/// identifier, not an ordinal. Any other file is a plain external resource
+/// whose whole contents are the block.
+///
+/// Reading a blocks file as though it were plain would hand the caller the
+/// signature and index as though they were pixels, which is the sort of thing
+/// that produces an image of noise rather than an error.
+fn extract_external(bytes: Vec<u8>, index: Option<u64>, path: &str) -> Result<Vec<u8>> {
+    let is_blocks_file = bytes.len() >= crate::distributed::BLOCKS_SIGNATURE.len()
+        && &bytes[..8] == crate::distributed::BLOCKS_SIGNATURE;
+
+    if !is_blocks_file {
+        if index.is_some() {
+            return Err(err!(
+                BadAttribute,
+                "{path:?} names a block by identifier but is not an XISF data blocks file"
+            ));
+        }
+        return Ok(bytes);
+    }
+
+    let id = index.ok_or_else(|| {
+        err!(BadAttribute, "{path:?} is a data blocks file, so the locator must name a block")
+    })?;
+    let parsed = crate::distributed::parse_blocks_file(&bytes)?;
+    let element = parsed
+        .get(id)
+        .ok_or_else(|| err!(NotFound, "{path:?} has no block with identifier {id}"))?;
+    if element.is_free() {
+        return Err(err!(NotFound, "block {id} in {path:?} is a free placeholder with no data"));
+    }
+
+    let start = usize::try_from(element.position)
+        .map_err(|_| err!(Unsupported, "block {id} lies beyond this platform's range"))?;
+    let len = usize::try_from(element.length)
+        .map_err(|_| err!(Unsupported, "block {id} is too large for this platform"))?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| err!(Truncated, "block {id}'s position and length overflow"))?;
+    if end > bytes.len() {
+        return Err(err!(
+            Truncated,
+            "block {id} in {path:?} runs {} bytes past the end of the file",
+            end - bytes.len()
+        ));
+    }
+    Ok(bytes[start..end].to_vec())
 }
 
 /// Decode a text-encoded block. Whitespace is insignificant in both encodings.
