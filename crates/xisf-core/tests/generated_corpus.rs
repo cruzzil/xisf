@@ -15,6 +15,7 @@
 
 use std::path::PathBuf;
 
+use xisf_core::image::Image;
 use xisf_core::{ErrorKind, Reader};
 
 fn corpus() -> PathBuf {
@@ -24,17 +25,6 @@ fn corpus() -> PathBuf {
 /// The pattern `tools/corpus-gen/generate.cpp` fills images with.
 fn expected_bytes(len: usize, bytes_per_sample: usize) -> Vec<u8> {
     (0..len).map(|i| ((i * 37 + (i / bytes_per_sample) * 11 + 1) & 0xff) as u8).collect()
-}
-
-fn bytes_per_sample(sample_format: &str) -> Option<usize> {
-    Some(match sample_format {
-        "UInt8" => 1,
-        "UInt16" => 2,
-        "UInt32" | "Float32" => 4,
-        "UInt64" | "Float64" | "Complex32" => 8,
-        "Complex64" => 16,
-        _ => return None,
-    })
 }
 
 #[test]
@@ -68,15 +58,13 @@ fn every_generated_file_reads_back_exactly() {
             .first()
             .unwrap_or_else(|| panic!("{name}: no <Image> element"));
 
-        let geometry = image.attr("geometry").unwrap_or_else(|| panic!("{name}: no geometry"));
-        let sample_format =
-            image.attr("sampleFormat").unwrap_or_else(|| panic!("{name}: no sampleFormat"));
-        let width = bytes_per_sample(sample_format)
-            .unwrap_or_else(|| panic!("{name}: unknown sampleFormat {sample_format}"));
-
-        let samples: usize =
-            geometry.split(':').map(|d| d.parse::<usize>().expect("geometry field")).product();
-        let expected_len = samples * width;
+        // Parsed through the real image model, so the corpus tests that
+        // rather than a second implementation written for the test.
+        let parsed = Image::parse(image).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let width = parsed.sample_format.size();
+        let expected_len =
+            parsed.data_size().unwrap_or_else(|| panic!("{name}: size overflow")) as usize;
+        assert!(parsed.channels_suffice(), "{name}: too few channels for its colour space");
 
         // A codec we do not implement must say so plainly rather than
         // producing wrong bytes. libXISF can write ZSTD, which XISF 1.0 does
@@ -90,7 +78,13 @@ fn every_generated_file_reads_back_exactly() {
             Err(e) => panic!("{name}: block: {e}"),
         };
 
-        assert_eq!(data.len(), expected_len, "{name}: wrong length for {geometry} {sample_format}");
+        assert_eq!(
+            data.len(),
+            expected_len,
+            "{name}: wrong length for {} {}",
+            parsed.dimensions.iter().map(u64::to_string).collect::<Vec<_>>().join("x"),
+            parsed.sample_format.name()
+        );
         assert_eq!(
             &*data,
             &expected_bytes(expected_len, width)[..],

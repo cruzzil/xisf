@@ -22,7 +22,9 @@ pub mod block;
 pub mod codec;
 pub mod error;
 pub mod header;
+pub mod image;
 pub mod layout;
+pub mod property;
 pub mod reader;
 
 pub use error::{Error, ErrorKind, Result};
