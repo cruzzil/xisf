@@ -290,6 +290,9 @@ impl StoredBlock {
     }
 }
 
+// As `codec::decompress`: with no codec feature enabled every arm below is
+// compiled out, leaving `data` unread. That is right for such a build.
+#[cfg_attr(not(any(feature = "zlib", feature = "lz4")), allow(unused_variables))]
 fn compress(data: &[u8], codec: Codec2) -> Result<Vec<u8>> {
     match codec {
         #[cfg(feature = "zlib")]
@@ -392,17 +395,35 @@ mod tests {
         round_trip(BlockOptions::default(), SampleFormat::UInt8);
     }
 
+    /// Only over what this build can actually write, so the matrix stays
+    /// honest under `--no-default-features` rather than asserting that an
+    /// absent codec works.
+    fn writable_compressions() -> Vec<Option<CompressionRequest>> {
+        let mut out = vec![None];
+        if cfg!(feature = "zlib") {
+            out.push(Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: None }));
+            out.push(Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: Some(4) }));
+        }
+        if cfg!(feature = "lz4") {
+            out.push(Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: None }));
+            out.push(Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: Some(2) }));
+        }
+        out
+    }
+
+    fn writable_checksums() -> Vec<Option<ChecksumAlgorithm>> {
+        if cfg!(feature = "checksums") {
+            vec![None, Some(ChecksumAlgorithm::Sha256)]
+        } else {
+            vec![None]
+        }
+    }
+
     #[test]
     fn every_option_combination_round_trips() {
         for format in [SampleFormat::UInt8, SampleFormat::UInt16, SampleFormat::Float32] {
-            for compression in [
-                None,
-                Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: None }),
-                Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: Some(4) }),
-                Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: None }),
-                Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: Some(2) }),
-            ] {
-                for checksum in [None, Some(ChecksumAlgorithm::Sha256)] {
+            for compression in writable_compressions() {
+                for checksum in writable_checksums() {
                     round_trip(BlockOptions { compression, checksum }, format);
                 }
             }
@@ -437,6 +458,7 @@ mod tests {
         assert_eq!(expected as usize, bytes.len(), "the file has trailing bytes");
     }
 
+    #[cfg(all(feature = "zlib", feature = "checksums"))]
     #[test]
     fn checksums_written_are_checksums_that_verify() {
         let image = image(8, 8, 1, SampleFormat::UInt16);
@@ -467,6 +489,7 @@ mod tests {
 
     /// Compression that makes a block larger is dropped, since storing it
     /// plain is legal and strictly better.
+    #[cfg(feature = "zlib")]
     #[test]
     fn incompressible_data_is_stored_plain() {
         let image = image(4, 4, 1, SampleFormat::UInt8);

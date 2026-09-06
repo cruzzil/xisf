@@ -66,21 +66,34 @@ fn libxisf_reads_what_we_write() {
         SampleFormat::Float32,
         SampleFormat::Float64,
     ] {
-        for compression in [
-            None,
-            Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: None }),
-            Some(CompressionRequest {
+        // Only what this build can write. Asserting that an absent codec
+        // round-trips would be testing the build configuration, not the code.
+        let mut compressions = vec![None];
+        if cfg!(feature = "zlib") {
+            compressions
+                .push(Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: None }));
+            compressions.push(Some(CompressionRequest {
                 codec: Codec2::Zlib,
                 shuffle_item_size: Some(format.size() as u64),
-            }),
-            Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: None }),
-            Some(CompressionRequest {
+            }));
+        }
+        if cfg!(feature = "lz4") {
+            compressions
+                .push(Some(CompressionRequest { codec: Codec2::Lz4, shuffle_item_size: None }));
+            compressions.push(Some(CompressionRequest {
                 codec: Codec2::Lz4,
                 shuffle_item_size: Some(format.size() as u64),
-            }),
-        ] {
-            for checksum in [None, Some(ChecksumAlgorithm::Sha256)] {
-                cases.push((format, compression, checksum));
+            }));
+        }
+        let checksums = if cfg!(feature = "checksums") {
+            vec![None, Some(ChecksumAlgorithm::Sha256)]
+        } else {
+            vec![None]
+        };
+
+        for compression in compressions {
+            for checksum in &checksums {
+                cases.push((format, compression, *checksum));
             }
         }
     }
