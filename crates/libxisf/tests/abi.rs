@@ -49,8 +49,9 @@ fn library_dir() -> Option<PathBuf> {
     Some(dir.to_path_buf())
 }
 
-/// Compile `source` against the header, link it, run it, and return its output.
-fn run_c_program(name: &str, source: &str) -> Result<String, String> {
+/// Compile `source` against the header, link it, run it with `args`, and
+/// return its output.
+fn run_c_program(name: &str, source: &str, args: &[&Path]) -> Result<String, String> {
     let Some(cc) = compiler() else {
         return Err("SKIP: no C compiler".into());
     };
@@ -87,6 +88,7 @@ fn run_c_program(name: &str, source: &str) -> Result<String, String> {
     }
 
     let run = Command::new(&binary)
+        .args(args)
         .env("LD_LIBRARY_PATH", &lib_dir)
         .env("DYLD_LIBRARY_PATH", &lib_dir)
         .output()
@@ -145,26 +147,27 @@ fn a_c_program_can_read_a_file() {
     let sample = dir.join("sample.xisf");
     write_sample(&sample);
 
-    let source = format!(
-        r#"
+    let source = r#"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <xisf.h>
 
-int main(void) {{
+int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: reader <file>\n"); return 2; }
+
     xisf_error_t err = (xisf_error_t)-1;
-    xisf_file_t *file = xisf_open("{path}", &err);
-    if (!file) {{
+    xisf_file_t *file = xisf_open(argv[1], &err);
+    if (!file) {
         fprintf(stderr, "open failed: %s\n", xisf_error_message(err));
         return 1;
-    }}
-    if (err != XISF_OK) {{ fprintf(stderr, "err not reset\n"); return 1; }}
+    }
+    if (err != XISF_OK) { fprintf(stderr, "err not reset\n"); return 1; }
 
-    if (xisf_image_count(file) != 1) {{ fprintf(stderr, "wrong image count\n"); return 1; }}
+    if (xisf_image_count(file) != 1) { fprintf(stderr, "wrong image count\n"); return 1; }
     const xisf_image_t *image = xisf_image_at(file, 0);
-    if (!image) {{ fprintf(stderr, "no image\n"); return 1; }}
+    if (!image) { fprintf(stderr, "no image\n"); return 1; }
 
     printf("geometry %llu x %llu x %llu\n",
            (unsigned long long)xisf_image_width(image),
@@ -174,23 +177,23 @@ int main(void) {{
            xisf_sample_format_name(xisf_image_sample_format(image)),
            xisf_sample_format_size(xisf_image_sample_format(image)));
 
-    if (xisf_image_verify(image) != XISF_OK) {{
+    if (xisf_image_verify(image) != XISF_OK) {
         fprintf(stderr, "checksum did not verify\n");
         return 1;
-    }}
+    }
 
     /* The documented ownership rule: what the library allocates, xisf_free
        releases -- not the C library's free(). */
     size_t size = 0;
     void *pixels = xisf_image_read_alloc(image, &size, &err);
-    if (!pixels || err != XISF_OK) {{
+    if (!pixels || err != XISF_OK) {
         fprintf(stderr, "read_alloc failed: %s\n", xisf_error_message(err));
         return 1;
-    }}
-    if (size != xisf_image_data_size(image)) {{
+    }
+    if (size != xisf_image_data_size(image)) {
         fprintf(stderr, "size disagrees with data_size\n");
         return 1;
-    }}
+    }
 
     /* A real caller casts to the sample type; this must be aligned for it. */
     const uint16_t *samples = (const uint16_t *)pixels;
@@ -199,23 +202,23 @@ int main(void) {{
 
     /* And the caller-provided-buffer form must agree with it. */
     unsigned char *mine = malloc(size);
-    if (!mine) {{ return 1; }}
-    if (xisf_image_read(image, mine, size) != XISF_OK) {{
+    if (!mine) { return 1; }
+    if (xisf_image_read(image, mine, size) != XISF_OK) {
         fprintf(stderr, "read into buffer failed\n");
         return 1;
-    }}
-    if (memcmp(mine, pixels, size) != 0) {{
+    }
+    if (memcmp(mine, pixels, size) != 0) {
         fprintf(stderr, "the two read paths disagree\n");
         return 1;
-    }}
+    }
     free(mine);
 
     /* A short buffer is refused. */
     unsigned char small[4];
-    if (xisf_image_read(image, small, sizeof small) != XISF_ERR_INVALID_ARGUMENT) {{
+    if (xisf_image_read(image, small, sizeof small) != XISF_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "a short buffer was accepted\n");
         return 1;
-    }}
+    }
 
     xisf_free(pixels);
     xisf_close(file);
@@ -226,12 +229,10 @@ int main(void) {{
 
     printf("OK\n");
     return 0;
-}}
-"#,
-        path = sample.display()
-    );
+}
+"#;
 
-    match run_c_program("reader", &source) {
+    match run_c_program("reader", source, &[&sample]) {
         Err(e) if e.starts_with("SKIP") => eprintln!("skipping: {e}"),
         Err(e) => panic!("{e}"),
         Ok(output) => {
