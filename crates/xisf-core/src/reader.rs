@@ -66,6 +66,8 @@ pub struct Reader {
     source: Source,
     layout: Layout,
     header: Header,
+    /// See [`Reader::follow_absolute_paths`].
+    allow_absolute_paths: bool,
     /// Where the file came from, so a `path:` block can be resolved relative
     /// to it, as the spec requires.
     path: Option<PathBuf>,
@@ -92,6 +94,7 @@ impl Reader {
                 layout,
                 header,
                 path: Some(path.into()),
+                allow_absolute_paths: false,
             });
         }
 
@@ -106,14 +109,26 @@ impl Reader {
             // multi-gigabyte image be read without loading it all.
             let mapped = unsafe { memmap2::Mmap::map(&file) }?;
             let (layout, header) = Self::scan(&mapped)?;
-            Ok(Self { source: Source::Mapped(mapped), layout, header, path: Some(path.into()) })
+            Ok(Self {
+                source: Source::Mapped(mapped),
+                layout,
+                header,
+                path: Some(path.into()),
+                allow_absolute_paths: false,
+            })
         }
     }
 
     /// Scan a file already in memory.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
         let (layout, header) = Self::scan(&bytes)?;
-        Ok(Self { source: Source::Owned(bytes), layout, header, path: None })
+        Ok(Self {
+            source: Source::Owned(bytes),
+            layout,
+            header,
+            path: None,
+            allow_absolute_paths: false,
+        })
     }
 
     fn scan(bytes: &[u8]) -> Result<(Layout, Header)> {
@@ -223,18 +238,52 @@ impl Reader {
         })
     }
 
-    /// Resolve a `path:` locator against the file's own directory.
+    /// Whether to follow `path(...)` locators that name an absolute path.
     ///
-    /// Anything that could escape that directory is refused: the locator names
-    /// a companion file, and a header is not a reason to read elsewhere.
+    /// Off by default, and that is a deliberate departure from the letter of
+    /// the specification, which defines the field as an *absolute* path. A
+    /// header is untrusted input: a file that says
+    /// `location="path(/etc/shadow)"` is asking a library to read a file the
+    /// user never named, and returning its bytes as pixel data is an
+    /// arbitrary-file-read primitive dressed as an image decoder.
+    ///
+    /// Relative locators still resolve beside the referring file, which is
+    /// what a distributed unit actually needs and what the corpus uses. A
+    /// caller who genuinely wants absolute paths -- a trusted pipeline, say --
+    /// turns them on and takes that decision knowingly.
+    pub fn follow_absolute_paths(&mut self, allow: bool) {
+        self.allow_absolute_paths = allow;
+    }
+
+    /// Resolve a `path(...)` locator to a file to read.
+    ///
+    /// A relative locator is resolved beside the referring file and may not
+    /// climb out of its directory; an absolute one is refused unless
+    /// [`follow_absolute_paths`](Reader::follow_absolute_paths) says otherwise.
     fn resolve_relative(&self, locator: &str) -> Result<PathBuf> {
+        let candidate = Path::new(locator);
+        if candidate.is_absolute() {
+            if !self.allow_absolute_paths {
+                return Err(err!(
+                    BadAttribute,
+                    "{locator:?} is an absolute path; following one from a file header is \
+                     refused unless the caller opts in"
+                ));
+            }
+            return Ok(candidate.to_path_buf());
+        }
+        self.resolve_beside(locator)
+    }
+
+    /// Resolve a relative locator against the file's own directory.
+    fn resolve_beside(&self, locator: &str) -> Result<PathBuf> {
         let base = self.path.as_ref().and_then(|p| p.parent()).ok_or_else(|| {
             err!(NotFound, "this file has no directory to resolve {locator:?} in")
         })?;
 
         let candidate = Path::new(locator);
-        if candidate.is_absolute() || locator.contains("://") {
-            return Err(err!(BadAttribute, "{locator:?} is not a relative path"));
+        if locator.contains("://") {
+            return Err(err!(BadAttribute, "{locator:?} is a URL, not a path"));
         }
         for component in candidate.components() {
             use std::path::Component;
@@ -421,15 +470,47 @@ mod tests {
         }
     }
 
+    /// A header is untrusted input, so neither climbing out of the referring
+    /// file's directory nor naming an absolute path is followed by default.
     #[test]
-    fn a_path_block_may_not_escape_its_directory() {
-        let xml = r#"<xisf version="1.0"><Image location="path:../secret"/></xisf>"#;
-        let reader = Reader::from_bytes(build(xml, &[])).unwrap();
-        let image = reader.header().images()[0];
-        let err = reader.stored_block(&image.data).unwrap_err();
-        // Without a path on the reader it cannot resolve at all; with one it
-        // would be refused for climbing out. Either way it is not read.
-        assert!(matches!(err.kind(), ErrorKind::NotFound | ErrorKind::BadAttribute));
+    fn external_paths_are_not_followed_where_they_should_not_be() {
+        for locator in ["path(../secret)", "path(/etc/passwd)", "path(a/../../b)"] {
+            let xml = format!(r#"<xisf version="1.0"><Image location="{locator}"/></xisf>"#);
+            let reader = Reader::from_bytes(build(&xml, &[])).unwrap();
+            let image = reader.header().images()[0];
+            let err = reader.stored_block(&image.data).unwrap_err();
+            assert!(
+                matches!(err.kind(), ErrorKind::NotFound | ErrorKind::BadAttribute),
+                "{locator} produced {err}"
+            );
+        }
+    }
+
+    /// Turning absolute paths on is a decision the caller makes knowingly.
+    #[test]
+    fn absolute_paths_are_followed_only_when_asked_for() {
+        let dir = std::env::temp_dir().join(format!("xisf-abs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("block.bin");
+        std::fs::write(&target, b"payload").unwrap();
+
+        let xml = format!(
+            r#"<xisf version="1.0"><Image location="path({})"/></xisf>"#,
+            target.display().to_string().replace('\\', "/")
+        );
+        let mut reader = Reader::from_bytes(build(&xml, &[])).unwrap();
+
+        let data = reader.header().images()[0].data.clone();
+        assert_eq!(
+            reader.stored_block(&data).unwrap_err().kind(),
+            ErrorKind::BadAttribute,
+            "an absolute path was followed without being asked for"
+        );
+
+        reader.follow_absolute_paths(true);
+        assert_eq!(&*reader.stored_block(&data).unwrap(), b"payload");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Needs a hash implementation compiled in; without the feature the

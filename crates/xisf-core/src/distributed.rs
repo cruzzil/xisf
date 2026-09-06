@@ -376,7 +376,7 @@ mod tests {
     fn a_header_file_is_the_header_alone() {
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <xisf version="1.0"><Image geometry="4:4:1" sampleFormat="UInt8"
-      location="path:data.xisb"/></xisf>"#;
+      location="path(data.xisb)"/></xisf>"#;
         let header = parse_header_file(xml.as_bytes()).expect("parse");
         assert_eq!(header.images().len(), 1);
 

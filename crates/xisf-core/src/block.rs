@@ -40,13 +40,31 @@ impl Location {
     /// Parse a `location` attribute.
     ///
     /// ```text
-    /// location="inline:base64"
+    /// location="inline:base64"                 (or :hex)
     /// location="embedded"
-    /// location="attachment:1234:5678"
-    /// location="path:sub/blocks.dat"          (optionally :index)
-    /// location="url:file://blocks.dat"        (optionally :index)
+    /// location="attachment:1234:5678"          position:size
+    /// location="path(/data/blocks.xisb)"       optionally ):0x7a73...
+    /// location="url(http://host/f.xisb)"       optionally ):0x7a73...
     /// ```
+    ///
+    /// Note the shapes differ: `inline` and `attachment` take colon-separated
+    /// fields, while `path` and `url` **parenthesise** their locator. That is
+    /// what lets a URL contain colons and slashes without ambiguity, and it
+    /// means a parser that assumed one form throughout gets the other wrong.
+    /// A literal parenthesis inside a URL is XML-escaped by the writer, so it
+    /// has already been unescaped by the time it arrives here -- which is why
+    /// the closing parenthesis is found from the *end*.
+    ///
+    /// The optional trailing identifier names a block within an XISF data
+    /// blocks file. The specification says it should be written in
+    /// hexadecimal, and real files use `0x`-prefixed values, but it defines
+    /// the field as an unsigned integer, so plain decimal is accepted too.
     pub fn parse(text: &str) -> Result<Self> {
+        let text = text.trim();
+        if let Some(location) = Self::parse_parenthesised(text)? {
+            return Ok(location);
+        }
+
         let (scheme, rest) = match text.split_once(':') {
             Some((scheme, rest)) => (scheme, Some(rest)),
             None => (text, None),
@@ -78,22 +96,45 @@ impl Location {
                     size: parse_u64(size, "attachment size")?,
                 })
             }
-            // A URL may itself contain colons, so only a *trailing* all-digit
-            // field is an index; anything else is part of the locator.
-            "path" | "url" => {
-                let rest = rest.ok_or_else(|| err!(BadAttribute, "{scheme} needs a locator"))?;
-                let (locator, index) = split_trailing_index(rest);
-                if locator.is_empty() {
-                    return Err(err!(BadAttribute, "{scheme} locator is empty"));
-                }
-                Ok(if scheme == "path" {
-                    Location::Path { path: locator.to_string(), index }
-                } else {
-                    Location::Url { url: locator.to_string(), index }
-                })
-            }
             other => Err(err!(BadAttribute, "unknown location scheme {other:?}")),
         }
+    }
+
+    /// Parse the parenthesised `path(...)` and `url(...)` forms.
+    fn parse_parenthesised(text: &str) -> Result<Option<Self>> {
+        let (scheme, rest) = match text.strip_prefix("path(") {
+            Some(rest) => ("path", rest),
+            None => match text.strip_prefix("url(") {
+                Some(rest) => ("url", rest),
+                None => return Ok(None),
+            },
+        };
+
+        // From the end, so a locator containing its own parentheses -- legal,
+        // once XML-unescaped -- does not truncate here.
+        let close = rest.rfind(')').ok_or_else(|| {
+            err!(BadAttribute, "{scheme}(...) is missing its closing parenthesis")
+        })?;
+        let locator = rest[..close].trim();
+        if locator.is_empty() {
+            return Err(err!(BadAttribute, "{scheme}(...) has an empty locator"));
+        }
+
+        let index = match rest[close + 1..].trim() {
+            "" => None,
+            tail => {
+                let digits = tail
+                    .strip_prefix(':')
+                    .ok_or_else(|| err!(BadAttribute, "unexpected {tail:?} after {scheme}(...)"))?;
+                Some(parse_block_id(digits.trim())?)
+            }
+        };
+
+        Ok(Some(if scheme == "path" {
+            Location::Path { path: locator.to_string(), index }
+        } else {
+            Location::Url { url: locator.to_string(), index }
+        }))
     }
 
     /// Whether the bytes live outside the file that named them.
@@ -326,19 +367,18 @@ impl Checksum {
     }
 }
 
-/// Split a trailing `:digits` index off a locator.
-fn split_trailing_index(text: &str) -> (&str, Option<u64>) {
-    match text.rsplit_once(':') {
-        Some((head, tail))
-            if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) && !head.is_empty() =>
-        {
-            match tail.parse::<u64>() {
-                Ok(index) => (head, Some(index)),
-                Err(_) => (text, None),
-            }
-        }
-        _ => (text, None),
+/// Parse a block index identifier, which the specification says should be
+/// hexadecimal but defines as an unsigned integer.
+fn parse_block_id(text: &str) -> Result<u64> {
+    let (digits, radix) = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => (hex, 16),
+        None => (text, 10),
+    };
+    if digits.is_empty() {
+        return Err(err!(BadAttribute, "a block identifier is empty"));
     }
+    u64::from_str_radix(digits, radix)
+        .map_err(|_| err!(BadAttribute, "{text:?} is not a block identifier"))
 }
 
 fn parse_u64(text: &str, what: &str) -> Result<u64> {
@@ -371,27 +411,73 @@ mod tests {
         );
     }
 
+    /// `path` and `url` parenthesise their locator, unlike `inline` and
+    /// `attachment`, which are colon-separated. Assuming one form throughout
+    /// gets the other wrong.
     #[test]
-    fn a_url_keeps_its_own_colons() {
-        // The naive split would make "//blocks.dat" the scheme's remainder
-        // and lose the rest; only a trailing all-digit field is an index.
+    fn path_and_url_are_parenthesised() {
         assert_eq!(
-            Location::parse("url:file://host/blocks.dat").unwrap(),
-            Location::Url { url: "file://host/blocks.dat".into(), index: None }
+            Location::parse("url(file://host/blocks.xisb)").unwrap(),
+            Location::Url { url: "file://host/blocks.xisb".into(), index: None }
         );
         assert_eq!(
-            Location::parse("url:file://host/blocks.dat:7").unwrap(),
-            Location::Url { url: "file://host/blocks.dat".into(), index: Some(7) }
+            Location::parse("path(/data/blocks.xisb)").unwrap(),
+            Location::Path { path: "/data/blocks.xisb".into(), index: None }
+        );
+        // A URL is full of colons and slashes; none of them ends the locator.
+        assert_eq!(
+            Location::parse("url(http://host:8080/a/b?c=d&e=f)").unwrap(),
+            Location::Url { url: "http://host:8080/a/b?c=d&e=f".into(), index: None }
+        );
+    }
+
+    /// The identifier is written in hexadecimal in practice, but defined as
+    /// an unsigned integer, so both spellings are accepted.
+    #[test]
+    fn block_identifiers_may_be_hexadecimal_or_decimal() {
+        assert_eq!(
+            Location::parse("path(/d/b.xisb):0x7a73526b584c6167").unwrap(),
+            Location::Path { path: "/d/b.xisb".into(), index: Some(0x7a73_526b_584c_6167) }
         );
         assert_eq!(
-            Location::parse("path:sub/blocks.dat").unwrap(),
-            Location::Path { path: "sub/blocks.dat".into(), index: None }
+            Location::parse("url(file:///d/b.xisb):0").unwrap(),
+            Location::Url { url: "file:///d/b.xisb".into(), index: Some(0) }
+        );
+        assert_eq!(
+            Location::parse("path(/d/b.xisb):42").unwrap(),
+            Location::Path { path: "/d/b.xisb".into(), index: Some(42) }
+        );
+    }
+
+    /// A locator may contain parentheses of its own once XML-unescaped, which
+    /// is why the closing one is found from the end.
+    #[test]
+    fn a_locator_may_contain_parentheses() {
+        assert_eq!(
+            Location::parse("url(ftp://ftp.example.com/public/example(2016).dat)").unwrap(),
+            Location::Url {
+                url: "ftp://ftp.example.com/public/example(2016).dat".into(),
+                index: None
+            }
         );
     }
 
     #[test]
     fn bad_locations_are_rejected() {
-        for text in ["", "inline", "inline:utf8", "attachment", "attachment:1", "url:", "wat"] {
+        for text in [
+            "",
+            "inline",
+            "inline:utf8",
+            "attachment",
+            "attachment:1",
+            "wat",
+            "path(",  // no closing parenthesis
+            "path()", // empty locator
+            "url()",
+            "path(/a):",    // an empty identifier
+            "path(/a):zz",  // not a number
+            "path(/a)junk", // trailing rubbish
+        ] {
             assert!(Location::parse(text).is_err(), "{text:?} should not parse");
         }
     }

@@ -86,7 +86,7 @@ fn a_block_is_read_out_of_a_data_blocks_file_by_identifier() {
     let blocks = vec![(1u64, vec![0xAA; 16]), (7u64, data.clone()), (9u64, vec![0xBB; 8])];
     std::fs::write(scratch.join("data.xisb"), write_blocks_file(&blocks).unwrap()).unwrap();
 
-    let path = monolithic_naming(&scratch, "path:data.xisb:7");
+    let path = monolithic_naming(&scratch, "path(data.xisb):7");
     let reader = Reader::open(&path).expect("open");
     let image = reader.header().images()[0];
 
@@ -102,7 +102,7 @@ fn a_blocks_file_must_be_addressed_by_identifier() {
     std::fs::write(scratch.join("data.xisb"), write_blocks_file(&[(1, pixels())]).unwrap())
         .unwrap();
 
-    let path = monolithic_naming(&scratch, "path:data.xisb");
+    let path = monolithic_naming(&scratch, "path(data.xisb)");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BadAttribute);
@@ -116,7 +116,7 @@ fn a_plain_external_file_is_the_whole_block() {
     let data = pixels();
     std::fs::write(scratch.join("raw.dat"), &data).unwrap();
 
-    let path = monolithic_naming(&scratch, "path:raw.dat");
+    let path = monolithic_naming(&scratch, "path(raw.dat)");
     let reader = Reader::open(&path).expect("open");
     let read = reader.block(&reader.header().images()[0].data).expect("block");
     assert_eq!(&*read, &data[..]);
@@ -128,7 +128,7 @@ fn a_plain_file_may_not_be_addressed_by_identifier() {
     let scratch = Scratch::new("plain-id");
     std::fs::write(scratch.join("raw.dat"), pixels()).unwrap();
 
-    let path = monolithic_naming(&scratch, "path:raw.dat:3");
+    let path = monolithic_naming(&scratch, "path(raw.dat):3");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BadAttribute);
@@ -140,7 +140,7 @@ fn an_unknown_identifier_is_reported() {
     std::fs::write(scratch.join("data.xisb"), write_blocks_file(&[(1, pixels())]).unwrap())
         .unwrap();
 
-    let path = monolithic_naming(&scratch, "path:data.xisb:42");
+    let path = monolithic_naming(&scratch, "path(data.xisb):42");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -150,7 +150,7 @@ fn an_unknown_identifier_is_reported() {
 #[test]
 fn a_header_file_parses_and_names_its_blocks() {
     let scratch = Scratch::new("header-file");
-    let header_path = write_unit(&scratch, &[(3, pixels())], "path:data.xisb:3");
+    let header_path = write_unit(&scratch, &[(3, pixels())], "path(data.xisb):3");
 
     let bytes = std::fs::read(&header_path).expect("read");
     let header = xisf_core::distributed::parse_header_file(&bytes).expect("parse");
