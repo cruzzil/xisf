@@ -32,7 +32,6 @@ const MAX_EXPANSION_RATIO: u64 = 2048;
 /// allocation before a single byte has been decompressed.
 // Only the codecs that decode into a growable buffer use this, so with none
 // of them compiled in it is unread -- correctly.
-#[cfg(any(feature = "zlib", feature = "zstd"))]
 const MAX_PREALLOCATION: usize = 64 << 20;
 
 /// Decompress and unshuffle a stored block.
@@ -54,7 +53,11 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
         ));
     }
 
-    let plain = decompress(stored, &compression.codec, size)?;
+    let plain = if compression.subblocks.is_empty() {
+        decompress(stored, &compression.codec, size)?
+    } else {
+        decompress_subblocks(stored, compression, size)?
+    };
     if plain.len() != size {
         return Err(err!(
             Compression,
@@ -71,6 +74,66 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
             Ok(unshuffle(&plain, item))
         }
     }
+}
+
+/// Decompress a block stored as several independent streams end to end.
+///
+/// Codecs have input limits -- zlib cannot take more than 4GiB at once -- and
+/// splitting a block also lets an encoder compress the pieces in parallel, so
+/// a large image from a parallel encoder arrives this way. Each subblock is
+/// its own complete stream: feeding the whole buffer to one codec call
+/// recovers only the first, which is why this is not something a decoder can
+/// quietly ignore.
+fn decompress_subblocks(stored: &[u8], compression: &Compression, size: usize) -> Result<Vec<u8>> {
+    // The declared pieces must account for exactly the bytes present and
+    // exactly the bytes claimed, checked before any of it is decoded.
+    let mut compressed_total: u64 = 0;
+    let mut uncompressed_total: u64 = 0;
+    for (compressed, uncompressed) in &compression.subblocks {
+        compressed_total = compressed_total
+            .checked_add(*compressed)
+            .ok_or_else(|| err!(Compression, "the subblock lengths overflow"))?;
+        uncompressed_total = uncompressed_total
+            .checked_add(*uncompressed)
+            .ok_or_else(|| err!(Compression, "the subblock lengths overflow"))?;
+    }
+    if compressed_total != stored.len() as u64 {
+        return Err(err!(
+            Compression,
+            "the subblocks account for {compressed_total} bytes but the block holds {}",
+            stored.len()
+        ));
+    }
+    if uncompressed_total != compression.uncompressed_size {
+        return Err(err!(
+            Compression,
+            "the subblocks decompress to {uncompressed_total} bytes but the block declares {}",
+            compression.uncompressed_size
+        ));
+    }
+
+    let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
+    let mut rest = stored;
+    for (n, (compressed, uncompressed)) in compression.subblocks.iter().enumerate() {
+        let compressed = usize::try_from(*compressed)
+            .map_err(|_| err!(Unsupported, "subblock {n} is too large for this platform"))?;
+        let uncompressed = usize::try_from(*uncompressed)
+            .map_err(|_| err!(Unsupported, "subblock {n} is too large for this platform"))?;
+
+        let (chunk, remainder) = rest.split_at(compressed);
+        rest = remainder;
+
+        let plain = decompress(chunk, &compression.codec, uncompressed)?;
+        if plain.len() != uncompressed {
+            return Err(err!(
+                Compression,
+                "subblock {n} declares {uncompressed} bytes but produced {}",
+                plain.len()
+            ));
+        }
+        out.extend_from_slice(&plain);
+    }
+    Ok(out)
 }
 
 // With every codec feature off, each arm below is compiled out and only the
@@ -194,6 +257,7 @@ mod tests {
                 codec: Codec::Zlib,
                 uncompressed_size: declared,
                 shuffle_item_size: None,
+                subblocks: Vec::new(),
             };
             let err = decode(&stored, &compression).unwrap_err();
             assert_eq!(err.kind(), crate::ErrorKind::Compression, "{declared} was not refused");
@@ -220,6 +284,7 @@ mod tests {
             codec: Codec::Zlib,
             uncompressed_size: plain.len() as u64,
             shuffle_item_size: None,
+            subblocks: Vec::new(),
         };
         assert_eq!(decode(&stored, &compression).unwrap(), plain);
     }

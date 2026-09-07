@@ -737,6 +737,20 @@ fn push_block_attrs(xml: &mut String, block: &StoredBlock) {
     }
 }
 
+/// The largest input a codec will take in one call.
+///
+/// The specification's answer to a larger block is the `subblocks` attribute,
+/// which divides it into several independent streams. This writer emits one
+/// stream per block, so these are the sizes past which it has to decline.
+fn codec_input_limit(codec: Codec2) -> u64 {
+    match codec {
+        // zlib's own interface takes a 32-bit length.
+        Codec2::Zlib => u64::from(u32::MAX),
+        // LZ4_MAX_INPUT_SIZE, which every LZ4 implementation shares.
+        Codec2::Lz4 => 0x7E00_0000,
+    }
+}
+
 /// Check a table before it is written.
 ///
 /// Cells are positional: which field a cell belongs to is decided by nothing
@@ -951,6 +965,23 @@ impl StoredBlock {
                     }
                 };
 
+                // Codecs have input limits, and past them a block must be
+                // split into subblocks with a `subblocks` attribute saying
+                // how. This writer does not split, so it refuses rather than
+                // handing a codec more than it can take: the alternative is
+                // a file that looks written and cannot be read back.
+                let limit = codec_input_limit(request.codec);
+                if staged.len() as u64 > limit {
+                    return Err(err!(
+                        Unsupported,
+                        "a {}-byte block exceeds the {} input limit of {limit} bytes; \
+                         it would have to be split into compression subblocks, which this \
+                         writer does not do",
+                        staged.len(),
+                        request.codec.as_codec().name()
+                    ));
+                }
+
                 let compressed = compress(&staged, request.codec)?;
 
                 // Compression that makes a block bigger is not worth writing:
@@ -962,6 +993,7 @@ impl StoredBlock {
                     (
                         compressed,
                         Some(Compression {
+                            subblocks: Vec::new(),
                             codec: request.codec.as_codec(),
                             uncompressed_size,
                             shuffle_item_size: item_size,

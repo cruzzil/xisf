@@ -241,9 +241,38 @@ pub struct Compression {
     /// numeric data. An item size of 1 is a no-op and the spec forbids it as
     /// a shuffled form.
     pub shuffle_item_size: Option<u64>,
+    /// Compression subblocks, as `(compressed, uncompressed)` byte counts.
+    ///
+    /// Empty means the block is one compressed stream, which is the ordinary
+    /// case. When present, the stored bytes are that many *independent*
+    /// streams laid end to end, each decompressing to its own length -- so a
+    /// decoder that fed the whole buffer to one codec call would recover
+    /// only the first subblock.
+    ///
+    /// They exist because codecs have input limits -- zlib cannot compress
+    /// more than 4GiB at once -- and because splitting a block lets an
+    /// encoder compress the pieces in parallel.
+    pub subblocks: Vec<(u64, u64)>,
 }
 
 impl Compression {
+    /// Parse a `subblocks` attribute: `c1,u1:c2,u2:...:cN,uN`.
+    pub fn parse_subblocks(text: &str) -> Result<Vec<(u64, u64)>> {
+        text.split(':')
+            .map(|pair| {
+                let (compressed, uncompressed) = pair.trim().split_once(',').ok_or_else(|| {
+                    err!(BadAttribute, "a subblock must be `compressed,uncompressed`, got {pair:?}")
+                })?;
+                let number = |field: &str| -> Result<u64> {
+                    field.trim().parse::<u64>().map_err(|_| {
+                        err!(BadAttribute, "a subblock length must be an integer, got {field:?}")
+                    })
+                };
+                Ok((number(compressed)?, number(uncompressed)?))
+            })
+            .collect()
+    }
+
     /// Parse a `compression` attribute.
     ///
     /// ```text
@@ -288,7 +317,7 @@ impl Compression {
             (false, _) => None,
         };
 
-        Ok(Compression { codec, uncompressed_size, shuffle_item_size })
+        Ok(Compression { codec, uncompressed_size, shuffle_item_size, subblocks: Vec::new() })
     }
 }
 
@@ -504,7 +533,12 @@ mod tests {
     fn compression_parses_with_and_without_shuffling() {
         assert_eq!(
             Compression::parse("zlib:30000").unwrap(),
-            Compression { codec: Codec::Zlib, uncompressed_size: 30000, shuffle_item_size: None }
+            Compression {
+                codec: Codec::Zlib,
+                uncompressed_size: 30000,
+                shuffle_item_size: None,
+                subblocks: Vec::new(),
+            }
         );
         assert_eq!(
             Compression::parse("zlib+sh:30000:4").unwrap(),
@@ -512,6 +546,7 @@ mod tests {
                 codec: Codec::Zlib,
                 uncompressed_size: 30000,
                 shuffle_item_size: Some(4),
+                subblocks: Vec::new(),
             }
         );
         assert_eq!(Compression::parse("lz4hc+sh:100:2").unwrap().codec, Codec::Lz4Hc);

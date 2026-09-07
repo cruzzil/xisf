@@ -233,3 +233,100 @@ fn every_orientation_the_spec_defines_round_trips() {
         assert!(Orientation::parse(bad).is_err(), "accepted orientation={bad:?}");
     }
 }
+
+/// A compressed block may be stored as several independent streams laid end
+/// to end, described by a `subblocks` attribute. Codecs have input limits --
+/// zlib takes at most 4GiB at once -- and splitting also lets an encoder
+/// compress the pieces in parallel, so files written this way exist;
+/// libXISF, the reference implementation, both reads and writes them.
+///
+/// A decoder that ignored the attribute would hand the whole buffer to one
+/// codec call and recover only the first piece.
+#[cfg(feature = "zlib")]
+#[test]
+fn a_block_stored_as_several_compression_subblocks_decodes_whole() {
+    use xisf_core::block::{Codec, Compression};
+
+    // Three distinguishable pieces, each compressed on its own.
+    let pieces: Vec<Vec<u8>> =
+        vec![vec![0xAA; 300], (0..=255u8).cycle().take(500).collect(), vec![0x11; 200]];
+
+    let compress = |data: &[u8]| -> Vec<u8> {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(data).expect("write");
+        encoder.finish().expect("finish")
+    };
+
+    let mut stored = Vec::new();
+    let mut subblocks = Vec::new();
+    let mut expected = Vec::new();
+    for piece in &pieces {
+        let compressed = compress(piece);
+        subblocks.push((compressed.len() as u64, piece.len() as u64));
+        stored.extend_from_slice(&compressed);
+        expected.extend_from_slice(piece);
+    }
+
+    let compression = Compression {
+        codec: Codec::Zlib,
+        uncompressed_size: expected.len() as u64,
+        shuffle_item_size: None,
+        subblocks: subblocks.clone(),
+    };
+    assert_eq!(xisf_core::codec::decode(&stored, &compression).expect("decode"), expected);
+
+    // Without the attribute the same bytes decode to the first piece only,
+    // which is exactly the silent truncation the attribute exists to prevent
+    // -- and the declared size catches it rather than returning a short image.
+    let ignored = Compression { subblocks: Vec::new(), ..compression.clone() };
+    let err = xisf_core::codec::decode(&stored, &ignored).expect_err("decoded without subblocks");
+    assert_eq!(err.kind(), xisf_core::ErrorKind::Compression);
+
+    // Lengths that do not account for the bytes present are refused before
+    // anything is decoded.
+    for bad in [
+        vec![(stored.len() as u64 + 1, expected.len() as u64)],
+        vec![(stored.len() as u64, expected.len() as u64 + 1)],
+        vec![(u64::MAX, 1), (u64::MAX, 1)],
+    ] {
+        let broken = Compression { subblocks: bad, ..compression.clone() };
+        assert!(xisf_core::codec::decode(&stored, &broken).is_err(), "a bad subblock list passed");
+    }
+}
+
+/// The attribute is parsed off the element, and describes the compression, so
+/// it is meaningless on a block that declares none.
+#[test]
+fn the_subblocks_attribute_is_read_and_requires_compression() {
+    let h = header(
+        r#"<Image geometry="2:2:1" sampleFormat="UInt8"
+           compression="zlib:400" subblocks="10,200:12,200"
+           location="attachment:1024:22"/>"#,
+    );
+    let compression = h.images()[0].data.compression.clone().expect("compression");
+    assert_eq!(compression.subblocks, vec![(10, 200), (12, 200)]);
+
+    // Attribute order must not matter: XML does not fix it.
+    let h = header(
+        r#"<Image geometry="2:2:1" sampleFormat="UInt8"
+           subblocks="10,200:12,200" compression="zlib:400"
+           location="attachment:1024:22"/>"#,
+    );
+    assert_eq!(
+        h.images()[0].data.compression.clone().expect("compression").subblocks,
+        vec![(10, 200), (12, 200)]
+    );
+
+    for bad in [
+        r#"subblocks="10,200" location="inline:base64""#, // no compression at all
+        r#"compression="zlib:400" subblocks="10""#,       // not a pair
+        r#"compression="zlib:400" subblocks="a,b""#,      // not numbers
+    ] {
+        let xml = format!(
+            r#"<xisf version="1.0"><Image geometry="2:2:1" sampleFormat="UInt8" {bad}/></xisf>"#
+        );
+        assert!(parse(&xml).is_err(), "accepted: {bad}");
+    }
+}

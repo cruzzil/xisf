@@ -386,6 +386,21 @@ Still open:
   segments in *pairs* of characters -- a `*` is missing inside the group -- so
   `foo:bar:Foo2_Bar3`, given as valid three lines later in the same section,
   does not match it. The evident intent is what is implemented.
+- ~~Compression subblocks~~ — done, and this one was latent in every file we
+  had. A compressed block may be stored as several *independent* streams laid
+  end to end, described by a `subblocks="c1,u1:c2,u2:..."` attribute; a
+  decoder that ignores it hands the whole buffer to one codec call and
+  recovers only the first piece. **libXISF writes the attribute on every
+  compressed block**, so the entire generated corpus carries it — we only got
+  away with ignoring it because a small block gets a single subblock, and one
+  subblock is indistinguishable from none. It would have broken on the first
+  block past a codec's input limit, which for LZ4 is about 2.1GB and entirely
+  reachable for stacked astronomical data. The declared lengths are now also
+  checked against the bytes present, which is a new integrity check that every
+  corpus file passes.
+
+  The writer does not split, so it now refuses a block larger than the codec
+  can take rather than emitting one that cannot be read back.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

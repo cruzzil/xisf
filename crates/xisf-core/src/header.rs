@@ -318,6 +318,7 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
 
     let mut attributes = Vec::new();
     let mut data = DataRef::default();
+    let mut subblocks: Option<Vec<(u64, u64)>> = None;
 
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|e| err!(BadHeader, "in <{name}>: {e}"))?;
@@ -332,11 +333,30 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
         match key.as_str() {
             "location" => data.location = Some(Location::parse(&value)?),
             "compression" => data.compression = Some(Compression::parse(&value)?),
+            // `subblocks` may be read before or after `compression`, since
+            // XML attributes have no required order, so it is stashed and
+            // married up once both have been seen.
+            "subblocks" => subblocks = Some(Compression::parse_subblocks(&value)?),
             "checksum" => data.checksum = Some(Checksum::parse(&value)?),
             "byteOrder" => data.byte_order = ByteOrder::parse(&value)?,
             _ => {}
         }
         attributes.push((key, value));
+    }
+
+    // `subblocks` describes how the compressed stream is divided, so it is
+    // meaningless without `compression` -- and silently dropping it would
+    // mean decoding only the first subblock and reporting a short block.
+    if let Some(subblocks) = subblocks {
+        match &mut data.compression {
+            Some(compression) => compression.subblocks = subblocks,
+            None => {
+                return Err(err!(
+                    BadHeader,
+                    "<{name}> has a subblocks attribute but is not compressed"
+                ));
+            }
+        }
     }
 
     Ok(Element { name, attributes, data, children: Vec::new() })
