@@ -16,8 +16,8 @@ repository = "https://github.com/cruzzil/xisf"
 authors = ["The xisf-rs Developers"]
 
 [workspace.dependencies]
-xisf-core = { path = "crates/xisf-core", version = "0.1.0" }
-xisf = { path = "crates/xisf", version = "0.1.0" }
+xisf-core = { path = "crates/xisf-core", version = "0.2.0" }
+xisf = { path = "crates/xisf", version = "0.2.0" }
 
 quick-xml = "0.38"
 base64 = "0.22"

@@ -1,12 +1,15 @@
 [package]
 name = "libxisf"
 description = "C ABI for reading XISF (Extensible Image Serialization Format) files"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["xisf", "astronomy", "ffi", "capi", "pixinsight"]
+categories = ["external-ffi-bindings", "encoding", "science"]
+readme = "../../README.md"
 
 [lib]
 # The target name decides the artifact names: `libxisf.so` and `libxisf.a`.

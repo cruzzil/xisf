@@ -1,12 +1,15 @@
 [package]
 name = "xisftool"
 description = "Command-line tool for inspecting XISF files"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["xisf", "astronomy", "cli", "image", "pixinsight"]
+categories = ["command-line-utilities", "encoding", "science"]
+readme = "../../README.md"
 
 # The package, the binary and the command are all `xisftool`, so `cargo
 # install xisftool` gives you a command of that name -- the mismatch that makes

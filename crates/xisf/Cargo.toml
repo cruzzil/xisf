@@ -1,12 +1,15 @@
 [package]
 name = "xisf"
 description = "Reading and writing XISF (Extensible Image Serialization Format) files"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+keywords = ["xisf", "astronomy", "image", "fits", "pixinsight"]
+categories = ["encoding", "parser-implementations", "science"]
+readme = "../../README.md"
 
 [dependencies]
 xisf-core.workspace = true
