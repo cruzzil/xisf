@@ -9,8 +9,9 @@
 //! is reported to stderr on first occurrence so the bug is visible rather than
 //! silently swallowed.
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::panic::AssertUnwindSafe;
+use core::sync::atomic::{AtomicBool, Ordering};
+use std::panic::catch_unwind;
 
 static REPORTED: AtomicBool = AtomicBool::new(false);
 
@@ -25,7 +26,7 @@ pub(crate) fn guard<T>(what: &'static str, fallback: T, body: impl FnOnce() -> T
     }
 }
 
-fn report(what: &'static str, payload: &Box<dyn std::any::Any + Send>) {
+fn report(what: &'static str, payload: &Box<dyn core::any::Any + Send>) {
     // Only the first is reported, so a caller looping over a broken file does
     // not flood stderr.
     if REPORTED.swap(true, Ordering::Relaxed) {

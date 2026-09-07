@@ -396,7 +396,7 @@ impl Checksum {
         let bytes = (0..digest.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&digest[i..i + 2], 16))
-            .collect::<std::result::Result<Vec<u8>, _>>()
+            .collect::<core::result::Result<Vec<u8>, _>>()
             .map_err(|_| err!(BadAttribute, "checksum digest is not hexadecimal"))?;
 
         Ok(Checksum { algorithm, digest: bytes })

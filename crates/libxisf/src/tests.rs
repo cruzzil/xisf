@@ -115,7 +115,7 @@ fn the_allocating_read_round_trips_through_xisf_free() {
 
     // The pointer is cast to the sample type by any real caller.
     assert_eq!(buffer as usize % align_of::<f32>(), 0, "the buffer is not aligned for f32");
-    let seen = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), size) };
+    let seen = unsafe { core::slice::from_raw_parts(buffer.cast::<u8>(), size) };
     let expected: Vec<u8> = (0..size).map(|i| (i * 11 + 3) as u8).collect();
     assert_eq!(seen, &expected[..]);
 
@@ -127,8 +127,8 @@ fn the_allocating_read_round_trips_through_xisf_free() {
 /// caller who ignored an error will pass one.
 #[test]
 fn null_handles_are_refused_rather_than_dereferenced() {
-    let null_file: *const XisfFile = std::ptr::null();
-    let null_image: *const XisfImage = std::ptr::null();
+    let null_file: *const XisfFile = core::ptr::null();
+    let null_image: *const XisfImage = core::ptr::null();
 
     assert_eq!(unsafe { xisf_image_count(null_file) }, 0);
     assert!(unsafe { xisf_image_at(null_file, 0) }.is_null());
@@ -143,18 +143,18 @@ fn null_handles_are_refused_rather_than_dereferenced() {
     assert!(unsafe { xisf_image_fits_keyword_name(null_image, 0) }.is_null());
 
     assert_eq!(
-        unsafe { xisf_image_read(null_image, std::ptr::null_mut(), 0) },
+        unsafe { xisf_image_read(null_image, core::ptr::null_mut(), 0) },
         XisfError::InvalidArgument as i32
     );
     assert!(
-        unsafe { xisf_image_read_alloc(null_image, std::ptr::null_mut(), std::ptr::null_mut()) }
+        unsafe { xisf_image_read_alloc(null_image, core::ptr::null_mut(), core::ptr::null_mut()) }
             .is_null()
     );
     assert_eq!(unsafe { xisf_image_verify(null_image) }, XisfError::InvalidArgument as i32);
 
     // Both destructors accept null.
-    unsafe { xisf_close(std::ptr::null_mut()) };
-    unsafe { xisf_free(std::ptr::null_mut()) };
+    unsafe { xisf_close(core::ptr::null_mut()) };
+    unsafe { xisf_free(core::ptr::null_mut()) };
 }
 
 #[test]
@@ -173,7 +173,7 @@ fn opening_rubbish_reports_why_rather_than_crashing() {
 
     // A null buffer is an argument error, not a crash.
     let mut err = -1;
-    assert!(unsafe { xisf_open_memory(std::ptr::null(), 10, &mut err) }.is_null());
+    assert!(unsafe { xisf_open_memory(core::ptr::null(), 10, &mut err) }.is_null());
     assert_eq!(err, XisfError::InvalidArgument as i32);
 }
 
@@ -199,13 +199,13 @@ fn out_of_range_indices_return_null_or_zero() {
 fn null_out_parameters_are_accepted() {
     let bytes = sample_file(SampleFormat::UInt8, 1);
     let file = unsafe {
-        xisf_open_memory(bytes.as_ptr().cast::<c_void>(), bytes.len(), std::ptr::null_mut())
+        xisf_open_memory(bytes.as_ptr().cast::<c_void>(), bytes.len(), core::ptr::null_mut())
     };
     assert!(!file.is_null());
 
     let image = unsafe { xisf_image_at(file, 0) };
     let buffer =
-        unsafe { xisf_image_read_alloc(image, std::ptr::null_mut(), std::ptr::null_mut()) };
+        unsafe { xisf_image_read_alloc(image, core::ptr::null_mut(), core::ptr::null_mut()) };
     assert!(!buffer.is_null());
 
     unsafe { xisf_free(buffer) };

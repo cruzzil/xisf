@@ -205,7 +205,7 @@ pub fn parse(xml: &str) -> Result<Header> {
             // `a &amp; b` would read back as `a  b` -- data loss that looks
             // like nothing at all went wrong.
             Ok(Event::GeneralRef(reference)) => {
-                let raw = std::str::from_utf8(&reference)
+                let raw = core::str::from_utf8(&reference)
                     .map_err(|e| err!(BadHeader, "entity reference: {e}"))?;
                 let resolved = resolve_entity(raw)
                     .ok_or_else(|| err!(BadHeader, "unknown entity reference &{raw};"))?;
@@ -310,7 +310,7 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
 
 fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
     let qname = start.name();
-    let raw = std::str::from_utf8(qname.as_ref())
+    let raw = core::str::from_utf8(qname.as_ref())
         .map_err(|e| err!(BadHeader, "an element name is not UTF-8: {e}"))?;
     // Namespace prefixes carry no meaning the engine needs; the namespace is
     // fixed by the spec and checked on the root.
@@ -322,7 +322,7 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
 
     for attribute in start.attributes() {
         let attribute = attribute.map_err(|e| err!(BadHeader, "in <{name}>: {e}"))?;
-        let key_raw = std::str::from_utf8(attribute.key.as_ref())
+        let key_raw = core::str::from_utf8(attribute.key.as_ref())
             .map_err(|e| err!(BadHeader, "an attribute name is not UTF-8: {e}"))?;
         let key = key_raw.rsplit(':').next().unwrap_or(key_raw).to_string();
         let value = attribute

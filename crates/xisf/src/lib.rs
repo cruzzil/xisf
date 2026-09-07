@@ -23,7 +23,14 @@
 
 #![warn(missing_docs)]
 
-use std::borrow::Cow;
+// `alloc` is not linked automatically even in a crate that has `std`, so it
+// is named here to make `alloc::` paths resolve. Reaching for the narrowest
+// crate that has an item -- `core` where no allocator is needed, `alloc`
+// where one is but an operating system is not -- keeps the door open to a
+// `no_std` build and marks which parts genuinely need the platform.
+extern crate alloc;
+
+use alloc::borrow::Cow;
 use std::path::Path;
 
 // Everything a caller can be handed by this crate's own API must be nameable

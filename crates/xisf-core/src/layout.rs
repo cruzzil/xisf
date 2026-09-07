@@ -85,7 +85,7 @@ pub fn scan(bytes: &[u8]) -> Result<Layout> {
 /// The header's XML text.
 pub fn header_str<'a>(bytes: &'a [u8], layout: &Layout) -> Result<&'a str> {
     let raw = &bytes[layout.header.0..layout.header.1];
-    std::str::from_utf8(raw).map_err(|e| err!(BadHeader, "the header is not valid UTF-8: {e}"))
+    core::str::from_utf8(raw).map_err(|e| err!(BadHeader, "the header is not valid UTF-8: {e}"))
 }
 
 /// Whether these bytes open an XML document rather than a monolithic file.

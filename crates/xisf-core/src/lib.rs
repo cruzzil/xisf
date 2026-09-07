@@ -18,6 +18,13 @@
 //! [data blocks]     addressed by `location="attachment:position:size"`
 //! ```
 
+// `alloc` is not linked automatically even in a crate that has `std`, so it
+// is named here to make `alloc::` paths resolve. Reaching for the narrowest
+// crate that has an item -- `core` where no allocator is needed, `alloc`
+// where one is but an operating system is not -- keeps the door open to a
+// `no_std` build and marks which parts genuinely need the platform.
+extern crate alloc;
+
 pub mod block;
 pub mod codec;
 pub mod distributed;

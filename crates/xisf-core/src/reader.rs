@@ -1,6 +1,6 @@
 //! Opening a monolithic XISF file and getting data blocks out of it.
 
-use std::borrow::Cow;
+use alloc::borrow::Cow;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
@@ -42,7 +42,7 @@ enum Source {
     Owned(Vec<u8>),
 }
 
-impl std::ops::Deref for Source {
+impl core::ops::Deref for Source {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         match self {
@@ -53,8 +53,8 @@ impl std::ops::Deref for Source {
     }
 }
 
-impl std::fmt::Debug for Source {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Source {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let kind = match self {
             #[cfg(not(miri))]
             Source::Mapped(_) => "Mapped",
@@ -80,8 +80,8 @@ pub struct Reader {
     path: Option<PathBuf>,
 }
 
-impl std::fmt::Debug for Reader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for Reader {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Reader")
             .field("source", &self.source)
             .field("path", &self.path)
@@ -604,7 +604,7 @@ fn decode_text(text: &str, encoding: TextEncoding) -> Result<Vec<u8>> {
             (0..compact.len())
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&compact[i..i + 2], 16))
-                .collect::<std::result::Result<Vec<u8>, _>>()
+                .collect::<core::result::Result<Vec<u8>, _>>()
                 .map_err(|e| err!(BadAttribute, "hex: {e}"))
         }
     }

@@ -36,5 +36,16 @@ memmap2 = "0.9"
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"
 
+[workspace.lints.clippy]
+# Reach for the narrowest crate that has the item: `core` for anything that
+# needs no allocator, `alloc` for anything that needs one but not an operating
+# system. Nothing here is `no_std` today, and `xisf-core` could plausibly
+# become so -- it is parsing and arithmetic over a byte slice, with the file
+# and memory-map handling confined to the reader -- so writing `core::` from
+# the start keeps that door open instead of leaving a mechanical sweep to do
+# later. It also documents which parts genuinely need the platform.
+std_instead_of_core = "warn"
+std_instead_of_alloc = "warn"
+
 [profile.release]
 lto = "thin"

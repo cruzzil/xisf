@@ -1,6 +1,6 @@
 //! One error type for the whole engine.
 
-use std::fmt;
+use core::fmt;
 
 /// What went wrong, in a form a caller can branch on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +72,7 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self {
@@ -81,7 +81,7 @@ impl From<std::io::Error> for Error {
 }
 
 /// The engine's result type.
-pub type Result<T> = std::result::Result<T, Error>;
+pub type Result<T> = core::result::Result<T, Error>;
 
 /// Build an [`Error`] with a formatted message.
 #[macro_export]

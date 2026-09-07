@@ -367,7 +367,7 @@ pub fn write_blocks_file(blocks: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
 /// here fails as an XML error rather than a signature mismatch. The root
 /// element check in [`crate::header::parse`] is what catches it.
 pub fn parse_header_file(bytes: &[u8]) -> Result<crate::header::Header> {
-    let text = std::str::from_utf8(bytes)
+    let text = core::str::from_utf8(bytes)
         .map_err(|e| err!(BadHeader, "an XISF header file must be UTF-8: {e}"))?;
     crate::header::parse(text)
 }

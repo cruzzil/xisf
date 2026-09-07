@@ -22,7 +22,7 @@
 //! destination to be writable and aligned but *not* initialised, which is
 //! exactly what a C out-parameter is.
 
-use std::ffi::{CStr, c_char, c_void};
+use core::ffi::{CStr, c_char, c_void};
 
 /// Write `value` through a C out-parameter, doing nothing if it is null.
 ///
@@ -72,7 +72,8 @@ pub(crate) unsafe fn c_str<'a>(ptr: *const c_char) -> Option<&'a CStr> {
 /// enough for every XISF sample format: the widest is `Complex64`, two
 /// `f64`s, whose alignment requirement is 8.
 pub(crate) mod buffer {
-    use std::alloc::{Layout, alloc, dealloc};
+    use alloc::alloc::{alloc, dealloc};
+    use core::alloc::Layout;
 
     /// Bytes reserved before the payload for its length.
     const HEADER: usize = size_of::<usize>();
@@ -86,13 +87,13 @@ pub(crate) mod buffer {
     /// Returns null if allocation fails or the size is unrepresentable.
     pub(crate) fn allocate(bytes: &[u8]) -> *mut u8 {
         let Some(layout) = layout_for(bytes.len()) else {
-            return std::ptr::null_mut();
+            return core::ptr::null_mut();
         };
 
         // SAFETY: the layout has a non-zero size, since HEADER is non-zero.
         let base = unsafe { alloc(layout) };
         if base.is_null() {
-            return std::ptr::null_mut();
+            return core::ptr::null_mut();
         }
 
         // SAFETY: `base` is a fresh allocation of at least HEADER + len bytes,
@@ -101,7 +102,7 @@ pub(crate) mod buffer {
         unsafe {
             base.cast::<usize>().write(bytes.len());
             let payload = base.add(HEADER);
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
+            core::ptr::copy_nonoverlapping(bytes.as_ptr(), payload, bytes.len());
             payload
         }
     }
@@ -141,14 +142,14 @@ mod tests {
 
     #[test]
     fn write_out_ignores_a_null_destination() {
-        unsafe { write_out(std::ptr::null_mut::<u32>(), 7) };
+        unsafe { write_out(core::ptr::null_mut::<u32>(), 7) };
     }
 
     #[test]
     fn write_out_does_not_read_the_previous_contents() {
         // The point of `ptr::write`: the destination starts uninitialised,
         // exactly as a C caller's `xisf_error_t err;` does.
-        let mut slot = std::mem::MaybeUninit::<u32>::uninit();
+        let mut slot = core::mem::MaybeUninit::<u32>::uninit();
         unsafe { write_out(slot.as_mut_ptr(), 42) };
         assert_eq!(unsafe { slot.assume_init() }, 42);
     }
@@ -160,7 +161,7 @@ mod tests {
             let ptr = buffer::allocate(&data);
             assert!(!ptr.is_null(), "allocation of {len} bytes failed");
 
-            let seen = unsafe { std::slice::from_raw_parts(ptr, len) };
+            let seen = unsafe { core::slice::from_raw_parts(ptr, len) };
             assert_eq!(seen, &data[..], "the buffer's contents changed");
 
             unsafe { buffer::release(ptr) };
@@ -181,13 +182,13 @@ mod tests {
 
     #[test]
     fn releasing_null_is_a_no_op() {
-        unsafe { buffer::release(std::ptr::null_mut()) };
-        unsafe { free_buffer(std::ptr::null_mut()) };
+        unsafe { buffer::release(core::ptr::null_mut()) };
+        unsafe { free_buffer(core::ptr::null_mut()) };
     }
 
     #[test]
     fn c_str_rejects_null() {
-        assert!(unsafe { c_str(std::ptr::null()) }.is_none());
+        assert!(unsafe { c_str(core::ptr::null()) }.is_none());
         assert_eq!(unsafe { c_str(c"hello".as_ptr()) }, Some(c"hello"));
     }
 }

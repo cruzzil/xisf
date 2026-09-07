@@ -24,7 +24,14 @@
 //! - **Raw pointers go through the `ffi` module.** One place makes each
 //!   judgement, rather than the same one being re-made at every call site.
 
-use std::ffi::{CStr, CString, c_char, c_void};
+// `alloc` is not linked automatically even with `std` present; see the note
+// in `xisf-core`. This crate hands allocations across a C boundary, so which
+// allocator is meant matters more here than anywhere else in the workspace.
+extern crate alloc;
+
+use alloc::ffi::CString;
+use core::ffi::CStr;
+use core::ffi::{c_char, c_void};
 
 use xisf_core::block::ByteOrder;
 use xisf_core::image::{ColorSpace, Image, SampleFormat};
@@ -266,14 +273,14 @@ unsafe fn resolve<'a>(image: *const XisfImage) -> Option<(&'a XisfFile, &'a Imag
 /// writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xisf_open(path: *const c_char, err: *mut i32) -> *mut XisfFile {
-    guard("xisf_open", std::ptr::null_mut(), || {
+    guard("xisf_open", core::ptr::null_mut(), || {
         let Some(path) = (unsafe { c_str(path) }) else {
             unsafe { write_out(err, XisfError::InvalidArgument as i32) };
-            return std::ptr::null_mut();
+            return core::ptr::null_mut();
         };
         let Ok(path) = path.to_str() else {
             unsafe { write_out(err, XisfError::InvalidArgument as i32) };
-            return std::ptr::null_mut();
+            return core::ptr::null_mut();
         };
 
         match Reader::open(path) {
@@ -283,7 +290,7 @@ pub unsafe extern "C" fn xisf_open(path: *const c_char, err: *mut i32) -> *mut X
             }
             Err(e) => {
                 unsafe { write_out(err, XisfError::from(e.kind()) as i32) };
-                std::ptr::null_mut()
+                core::ptr::null_mut()
             }
         }
     })
@@ -300,13 +307,13 @@ pub unsafe extern "C" fn xisf_open_memory(
     size: usize,
     err: *mut i32,
 ) -> *mut XisfFile {
-    guard("xisf_open_memory", std::ptr::null_mut(), || {
+    guard("xisf_open_memory", core::ptr::null_mut(), || {
         if data.is_null() {
             unsafe { write_out(err, XisfError::InvalidArgument as i32) };
-            return std::ptr::null_mut();
+            return core::ptr::null_mut();
         }
         // SAFETY: the caller guarantees `size` readable bytes at `data`.
-        let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
+        let bytes = unsafe { core::slice::from_raw_parts(data.cast::<u8>(), size) }.to_vec();
 
         match Reader::from_bytes(bytes) {
             Ok(reader) => {
@@ -315,7 +322,7 @@ pub unsafe extern "C" fn xisf_open_memory(
             }
             Err(e) => {
                 unsafe { write_out(err, XisfError::from(e.kind()) as i32) };
-                std::ptr::null_mut()
+                core::ptr::null_mut()
             }
         }
     })
@@ -350,14 +357,14 @@ pub unsafe extern "C" fn xisf_image_count(file: *const XisfFile) -> usize {
 /// used.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn xisf_image_at(file: *const XisfFile, index: usize) -> *const XisfImage {
-    guard("xisf_image_at", std::ptr::null(), || {
+    guard("xisf_image_at", core::ptr::null(), || {
         let Some(handle) = (unsafe { as_ref(file) }) else {
-            return std::ptr::null();
+            return core::ptr::null();
         };
         let handles = handle.handles.get_or_init(|| {
             (0..handle.images.len()).map(|entry| XisfImage { file, entry }).collect()
         });
-        handles.get(index).map_or(std::ptr::null(), |h| h as *const XisfImage)
+        handles.get(index).map_or(core::ptr::null(), |h| h as *const XisfImage)
     })
 }
 
@@ -451,11 +458,11 @@ macro_rules! fits_accessor {
         /// file and stays valid until it is closed.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn $name(image: *const XisfImage, index: usize) -> *const c_char {
-            guard(stringify!($name), std::ptr::null(), || {
+            guard(stringify!($name), core::ptr::null(), || {
                 match unsafe { resolve(image) } {
-                    None => std::ptr::null(),
+                    None => core::ptr::null(),
                     Some((_, entry)) => {
-                        entry.fits.get(index).map_or(std::ptr::null(), |k| k.$field.as_ptr())
+                        entry.fits.get(index).map_or(core::ptr::null(), |k| k.$field.as_ptr())
                     }
                 }
             })
@@ -508,7 +515,7 @@ pub unsafe extern "C" fn xisf_image_read(
 
         // SAFETY: `buffer` is non-null and the caller guarantees `size`
         // writable bytes, which the check above proves is enough.
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), buffer.cast::<u8>(), data.len()) };
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buffer.cast::<u8>(), data.len()) };
         XisfError::Ok as i32
     })
 }
@@ -523,11 +530,11 @@ pub unsafe extern "C" fn xisf_image_read_alloc(
     size: *mut usize,
     err: *mut i32,
 ) -> *mut c_void {
-    guard("xisf_image_read_alloc", std::ptr::null_mut(), || {
+    guard("xisf_image_read_alloc", core::ptr::null_mut(), || {
         let fail = |code: XisfError| {
             unsafe { write_out(err, code as i32) };
             unsafe { write_out(size, 0usize) };
-            std::ptr::null_mut()
+            core::ptr::null_mut()
         };
 
         let Some((file, entry)) = (unsafe { resolve(image) }) else {
