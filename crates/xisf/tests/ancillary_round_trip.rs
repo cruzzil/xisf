@@ -358,3 +358,65 @@ fn interleaved_images_can_be_read_in_planar_order() {
     assert_eq!(already.read_planar::<u8>().expect("planar"), planar);
     assert_eq!(already.read::<u8>().expect("read"), planar);
 }
+
+/// A `FITSKeyword` exists to be a compatibility layer with FITS, so a name
+/// FITS itself would reject makes the element useless for its only job. The
+/// grammar is the FITS 3.0 one the spec cites.
+#[test]
+fn fits_keyword_names_are_checked_against_the_fits_grammar() {
+    let build = |name: &str| {
+        let mut writer = Writer::new();
+        writer.add_image(
+            PendingImage::new(
+                image(2, 2, SampleFormat::UInt8, ColorSpace::Gray),
+                vec![0; 4],
+                BlockOptions::default(),
+            )
+            .with_fits_keyword(name, "1", ""),
+        )
+    };
+
+    for good in ["EXPTIME", "DATE-OBS", "A", "SIMPLE", "NAXIS1", "FOO_BAR", ""] {
+        assert!(build(good).is_ok(), "{good:?} should be a valid FITS keyword name");
+    }
+    for bad in ["exptime", "TOOLONGNAME", "HAS SPACE", "PLUS+", "ÄÖÜ"] {
+        assert!(build(bad).is_err(), "{bad:?} should be refused");
+    }
+}
+
+/// A thumbnail's range is always its sample format's, so the spec forbids a
+/// `bounds` attribute outright, and it must be grayscale or RGB.
+#[test]
+fn thumbnails_may_not_declare_bounds_or_an_exotic_colour_space() {
+    let attempt = |mutate: &dyn Fn(&mut Image)| {
+        let mut thumb = image(2, 2, SampleFormat::UInt8, ColorSpace::Gray);
+        mutate(&mut thumb);
+        let mut writer = Writer::new();
+        writer.add_image(
+            PendingImage::new(
+                image(2, 2, SampleFormat::UInt8, ColorSpace::Gray),
+                vec![0; 4],
+                BlockOptions::default(),
+            )
+            .with_thumbnail(PendingThumbnail::new(
+                thumb,
+                vec![0; 4],
+                BlockOptions::default(),
+            )),
+        )
+    };
+
+    assert!(attempt(&|_| {}).is_ok(), "a plain grayscale thumbnail should be accepted");
+    assert!(
+        attempt(&|t| t.bounds = Some(xisf::Bounds { low: 0.0, high: 1.0 })).is_err(),
+        "a thumbnail with bounds was accepted"
+    );
+    assert!(
+        attempt(&|t| {
+            t.color_space = ColorSpace::CieLab;
+            t.channels = 3;
+        })
+        .is_err(),
+        "a CIE L*a*b* thumbnail was accepted"
+    );
+}

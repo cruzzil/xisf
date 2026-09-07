@@ -239,7 +239,9 @@ fn a_distributed_unit_written_here_reads_back() {
         else {
             panic!("image {n} is not addressed by path");
         };
-        assert_eq!(path, "data.xisb");
+        // The spec's own relative form: `@header_dir` is a literal token
+        // meaning "the directory holding the header", not a directory name.
+        assert_eq!(path, "@header_dir/data.xisb");
         let element = index.get(id.expect("an identifier")).expect("the block is indexed");
 
         let start = element.position as usize;
@@ -363,4 +365,63 @@ fn the_two_file_forms_are_told_apart_by_what_they_contain() {
     std::fs::write(&junk, b"not xisf and not xml either").unwrap();
     let err = Reader::open(&junk).expect_err("arbitrary bytes were accepted");
     assert_eq!(err.kind(), xisf_core::ErrorKind::NotXisf);
+}
+
+/// `@header_dir` is the only relative `path()` form the grammar defines, and
+/// a unit written per the spec's own examples has to open. It failed before:
+/// the token was looked for as a literal directory of that name.
+#[test]
+fn the_header_dir_token_resolves_beside_the_header() {
+    let scratch = Scratch::new("header-dir");
+    let data = pixels();
+    std::fs::create_dir_all(scratch.join("astrometry")).unwrap();
+    std::fs::write(scratch.join("plain.bin"), &data).unwrap();
+    std::fs::write(scratch.join("astrometry/solution.dat"), &data).unwrap();
+
+    // The spec's two worked examples: a file beside the header, and one in a
+    // sub-directory of it. Plus the bare relative form, which the grammar
+    // does not define but which files in the wild use.
+    for locator in [
+        "path(@header_dir/plain.bin)",
+        "path(@header_dir/astrometry/solution.dat)",
+        "path(plain.bin)",
+    ] {
+        let path = monolithic_naming(&scratch, locator);
+        let reader = Reader::open(&path).unwrap_or_else(|e| panic!("{locator}: {e}"));
+        let image = reader.header().images()[0];
+        assert_eq!(
+            &*reader.block(&image.data).unwrap_or_else(|e| panic!("{locator}: {e}")),
+            &data[..],
+            "{locator}"
+        );
+    }
+}
+
+/// The token is a prefix, not an exemption: everything after it is still a
+/// relative path that has to stay inside the header's directory.
+#[test]
+fn the_header_dir_token_cannot_be_used_to_climb_out() {
+    let scratch = Scratch::new("header-dir-escape");
+    std::fs::create_dir_all(scratch.join("unit")).unwrap();
+    std::fs::write(scratch.join("secret.txt"), b"secret").unwrap();
+    std::fs::write(scratch.join("unit/plain.bin"), pixels()).unwrap();
+
+    for locator in [
+        "path(@header_dir/../secret.txt)",
+        "path(@header_dir/a/../../secret.txt)",
+        "path(@header_dir//etc/hostname)",
+        "path(@header_dir)",
+    ] {
+        let xml = header_naming(locator);
+        let mut bytes = Vec::from(*b"XISF0100");
+        bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 4]);
+        bytes.extend_from_slice(xml.as_bytes());
+        let path = scratch.join("unit/unit.xisf");
+        std::fs::write(&path, bytes).unwrap();
+
+        let reader = Reader::open(&path).expect("open");
+        let image = reader.header().images()[0];
+        assert!(reader.block(&image.data).is_err(), "{locator} was followed");
+    }
 }

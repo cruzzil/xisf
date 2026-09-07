@@ -347,6 +347,24 @@ Still open:
   the samples came back as stored and the two are indistinguishable in a
   `Vec`, so an unwary caller got shuffled colour channels silently.
   `ImageRef::read_planar` returns channel order whatever the file used.
+- ~~The `@header_dir` locator token~~ — done, and it was a conformance bug
+  rather than an omission. The grammar defines exactly two `path()` forms:
+  an absolute path, and `path(@header_dir/rel-path)` for one relative to the
+  directory holding the header. We handled neither of those spellings for
+  the relative case -- a bare `path(name)` was assumed -- so a distributed
+  unit written to the spec's own worked examples failed to open, and our own
+  writer emitted a form the grammar does not define. Both are fixed; the
+  token is stripped before the containment check, so `@header_dir/../..` is
+  refused like any other attempt to climb out.
+
+  Worth recording for whoever verifies this next: **libXISF implements only
+  `inline`, `embedded` and `attachment` locations**, so the round-trip oracle
+  does not cover external blocks at all, and this interpretation rests on the
+  specification text rather than on agreement with another implementation.
+- ~~Thumbnail and FITS keyword conformance on write~~ — done. A thumbnail may
+  not declare `bounds` and must be grayscale or RGB; a FITS keyword name must
+  satisfy the FITS 3.0 grammar the spec cites, since being readable as FITS is
+  the element's only purpose. Both are checked where the file is built.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

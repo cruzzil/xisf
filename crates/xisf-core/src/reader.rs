@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 
-use crate::block::{Checksum, ChecksumAlgorithm, Location, TextEncoding};
+use crate::block::{Checksum, ChecksumAlgorithm, HEADER_DIR_TOKEN, Location, TextEncoding};
 use crate::codec;
 use crate::err;
 use crate::error::Result;
@@ -393,6 +393,21 @@ impl Reader {
     /// climb out of its directory; an absolute one is refused unless
     /// [`follow_absolute_paths`](Reader::follow_absolute_paths) says otherwise.
     fn resolve_relative(&self, locator: &str) -> Result<PathBuf> {
+        // `@header_dir` is the specification's own spelling for "beside the
+        // file that named this", and it is the only relative form the
+        // grammar actually defines -- `path(@header_dir/blocks.xisb)`. It is
+        // stripped here rather than anywhere later so that everything after
+        // it, including the containment check below, sees an ordinary
+        // relative path and `@header_dir/../..` is refused like any other
+        // attempt to climb out.
+        if let Some(rest) = locator.strip_prefix(HEADER_DIR_TOKEN) {
+            let rest = rest.strip_prefix('/').unwrap_or(rest);
+            if rest.is_empty() {
+                return Err(err!(BadAttribute, "{locator:?} names a directory, not a file"));
+            }
+            return self.resolve_beside(rest);
+        }
+
         let candidate = Path::new(locator);
         if candidate.is_absolute() {
             if !self.allow_absolute_paths {
@@ -407,7 +422,13 @@ impl Reader {
         self.resolve_beside(locator)
     }
 
-    /// Resolve a relative locator against the file's own directory.
+    /// Resolve a locator relative to the referring file's own directory.
+    ///
+    /// A locator with no `@header_dir` prefix and no leading slash is
+    /// accepted here too. The grammar does not define that form -- a `path()`
+    /// is either absolute or `@header_dir`-prefixed -- but files written that
+    /// way exist, and reading one beside its header is what its author
+    /// plainly meant and is no more permissive than the documented form.
     fn resolve_beside(&self, locator: &str) -> Result<PathBuf> {
         let base = self.path.as_ref().and_then(|p| p.parent()).ok_or_else(|| {
             err!(NotFound, "this file has no directory to resolve {locator:?} in")

@@ -4,6 +4,13 @@
 //! each has its own small grammar. They are parsed here rather than at the
 //! call sites, because getting them wrong is how a reader ends up addressing
 //! bytes that are not there.
+/// The token a relative `path(...)` locator begins with.
+///
+/// The specification defines exactly two `path()` forms: an absolute path,
+/// and `path(@header_dir/rel-path)` for one relative to the directory holding
+/// the header. The token is literal -- it is not a directory named
+/// `@header_dir`.
+pub const HEADER_DIR_TOKEN: &str = "@header_dir";
 
 use crate::err;
 use crate::error::{ErrorKind, Result};

@@ -18,7 +18,7 @@
 //! that stops as soon as no number gains a digit. In practice that is one or
 //! two rounds.
 
-use crate::block::{ChecksumAlgorithm, Codec, Compression};
+use crate::block::{ChecksumAlgorithm, Codec, Compression, HEADER_DIR_TOKEN};
 use crate::codec;
 use crate::err;
 use crate::error::Result;
@@ -300,6 +300,29 @@ impl Writer {
                     thumbnail.image.sample_format.name()
                 ));
             }
+            // The spec forbids `bounds` on a thumbnail outright: its range is
+            // always the full width of its integer type, so a bounds
+            // attribute would be either redundant or a contradiction.
+            if thumbnail.image.bounds.is_some() {
+                return Err(err!(
+                    InvalidArgument,
+                    "a thumbnail must not declare bounds; its range is its sample format's"
+                ));
+            }
+            if !matches!(
+                thumbnail.image.color_space,
+                crate::image::ColorSpace::Gray | crate::image::ColorSpace::Rgb
+            ) {
+                return Err(err!(
+                    InvalidArgument,
+                    "a thumbnail must be grayscale or RGB, got {}",
+                    thumbnail.image.color_space.name()
+                ));
+            }
+        }
+
+        for keyword in &pending.fits_keywords {
+            check_fits_name(&keyword.name)?;
         }
 
         self.images.push(pending);
@@ -446,10 +469,17 @@ impl Writer {
                 Addressing::Attached { .. } => {
                     format!("attachment:{}:{}", positions[index], block.bytes.len())
                 }
-                // `path(name):0xID` -- the parenthesised form, and the
-                // identifier in hexadecimal as the spec recommends.
+                // `path(@header_dir/name):0xID`. The `@header_dir` token is
+                // the only relative form the grammar defines -- a bare
+                // `path(name)` is neither absolute nor documented, however
+                // obvious its meaning -- and the identifier goes in
+                // hexadecimal, as the spec recommends.
                 Addressing::Distributed { blocks_file } => {
-                    format!("path({}):{:#x}", escape_attr(blocks_file), block_id(index))
+                    format!(
+                        "path({HEADER_DIR_TOKEN}/{}):{:#x}",
+                        escape_attr(blocks_file),
+                        block_id(index)
+                    )
                 }
             }
         };
@@ -668,6 +698,35 @@ fn push_block_attrs(xml: &mut String, block: &StoredBlock) {
             digest_hex(&checksum.digest)
         ));
     }
+}
+
+/// Check a FITS keyword name against the FITS 3.0 grammar the spec cites.
+///
+/// "The keyword name shall be a left justified, 8-character, space-filled,
+/// ASCII string with no embedded spaces", using digits, upper case `A`-`Z`,
+/// underscore and hyphen only. The point of a `FITSKeyword` element is to be
+/// a compatibility layer with FITS, so a name FITS itself would reject makes
+/// the element useless for the one job it has -- and the file is checked
+/// where it is built rather than by whoever eventually reads it.
+fn check_fits_name(name: &str) -> Result<()> {
+    if name.len() > 8 {
+        return Err(err!(
+            InvalidArgument,
+            "the FITS keyword {name:?} is {} characters; the limit is 8",
+            name.len()
+        ));
+    }
+    if let Some(bad) = name
+        .chars()
+        .find(|c| !(c.is_ascii_digit() || c.is_ascii_uppercase() || *c == '_' || *c == '-'))
+    {
+        return Err(err!(
+            InvalidArgument,
+            "the FITS keyword {name:?} contains {bad:?}; only A-Z, 0-9, underscore and \
+             hyphen are permitted"
+        ));
+    }
+    Ok(())
 }
 
 /// Colon-separated numbers, the form every multi-valued XISF attribute uses.
