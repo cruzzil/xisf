@@ -27,6 +27,7 @@ pub mod image;
 pub mod layout;
 pub mod property;
 pub mod reader;
+pub mod table;
 pub mod writer;
 
 pub use error::{Error, ErrorKind, Result};

@@ -95,7 +95,9 @@ fn a_symlink_within_the_directory_is_allowed() {
 
 /// A fifo passes every path check and then never ends. `/dev/zero` is the
 /// same shape: a locator that names one turns a read into an unbounded one.
-#[cfg(unix)]
+/// Skipped under Miri, which interprets rather than executes and so cannot
+/// spawn `mkfifo`. The property still holds there; it just cannot be built.
+#[cfg(all(unix, not(miri)))]
 #[test]
 fn a_locator_naming_something_that_is_not_a_file_is_refused() {
     let scratch = Scratch::new("fifo");

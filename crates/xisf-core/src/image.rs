@@ -356,6 +356,173 @@ impl Resolution {
     }
 }
 
+/// Split a colon-separated list of `n` floating point numbers.
+fn colon_numbers<const N: usize>(element: &str, name: &str, text: &str) -> Result<[f64; N]> {
+    let mut out = [0.0; N];
+    let mut parts = text.split(':');
+    for slot in out.iter_mut() {
+        let part = parts
+            .next()
+            .ok_or_else(|| err!(BadAttribute, "<{element}> {name}={text:?} needs {N} values"))?;
+        *slot = part.trim().parse::<f64>().map_err(|_| {
+            err!(BadAttribute, "<{element}> {name}={text:?} has a non-numeric component")
+        })?;
+        if !slot.is_finite() {
+            return Err(err!(BadAttribute, "<{element}> {name}={text:?} is not finite"));
+        }
+    }
+    if parts.next().is_some() {
+        return Err(err!(BadAttribute, "<{element}> {name}={text:?} has more than {N} values"));
+    }
+    Ok(out)
+}
+
+/// The transfer curve of an RGB working space.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Gamma {
+    /// A fixed exponent, always greater than zero.
+    Exponent(f64),
+    /// The sRGB piecewise transfer function, which is not a pure exponent.
+    Srgb,
+}
+
+/// An `<RGBWorkingSpace>` element: the colour space an image's RGB values
+/// are expressed in.
+///
+/// Every triple is in red, green, blue order. Absent, the spec's default is
+/// sRGB, which is what [`RgbWorkingSpace::srgb`] returns -- so a caller can
+/// treat "no element" and "sRGB" alike without special-casing either.
+#[derive(Clone, PartialEq, Debug)]
+pub struct RgbWorkingSpace {
+    pub gamma: Gamma,
+    /// Chromaticity x of the three primaries.
+    pub x: [f64; 3],
+    /// Chromaticity y of the three primaries.
+    pub y: [f64; 3],
+    /// Luminance coefficients of the three primaries.
+    pub luminance: [f64; 3],
+    pub name: Option<String>,
+}
+
+impl RgbWorkingSpace {
+    /// The sRGB space, which applies when an image declares none.
+    pub fn srgb() -> Self {
+        RgbWorkingSpace {
+            gamma: Gamma::Srgb,
+            x: [0.648431, 0.321152, 0.155886],
+            y: [0.330856, 0.597871, 0.066044],
+            luminance: [0.222491, 0.716888, 0.060621],
+            name: Some("sRGB IEC61966-2.1".into()),
+        }
+    }
+
+    /// Parse an `<RGBWorkingSpace>` element.
+    pub fn parse(element: &Element) -> Result<Self> {
+        if element.name != "RGBWorkingSpace" {
+            return Err(err!(
+                InvalidArgument,
+                "expected <RGBWorkingSpace>, got <{}>",
+                element.name
+            ));
+        }
+        let triple = |name: &str| -> Result<[f64; 3]> {
+            let text = element
+                .attr(name)
+                .ok_or_else(|| err!(BadHeader, "<RGBWorkingSpace> has no {name}"))?;
+            colon_numbers::<3>("RGBWorkingSpace", name, text)
+        };
+
+        let text = element
+            .attr("gamma")
+            .ok_or_else(|| err!(BadHeader, "<RGBWorkingSpace> has no gamma"))?;
+        let gamma = if text.trim().eq_ignore_ascii_case("sRGB") {
+            Gamma::Srgb
+        } else {
+            let exponent = text
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| err!(BadAttribute, "gamma={text:?} is neither sRGB nor a number"))?;
+            if !exponent.is_finite() || exponent <= 0.0 {
+                return Err(err!(BadAttribute, "gamma must be positive, got {exponent}"));
+            }
+            Gamma::Exponent(exponent)
+        };
+
+        Ok(RgbWorkingSpace {
+            gamma,
+            x: triple("x")?,
+            y: triple("y")?,
+            luminance: triple("Y")?,
+            name: element.attr("name").map(str::to_owned),
+        })
+    }
+}
+
+/// A `<DisplayFunction>` element: a screen transfer function, which changes
+/// how an image is *shown* without changing the data.
+///
+/// Each parameter has four components, for the red (or grey), green, blue and
+/// lightness channels in that order. Absent, the identity function applies,
+/// which is what [`DisplayFunction::identity`] returns.
+#[derive(Clone, PartialEq, Debug)]
+pub struct DisplayFunction {
+    /// Midtones balance.
+    pub midtones: [f64; 4],
+    /// Shadows clipping point.
+    pub shadows: [f64; 4],
+    /// Highlights clipping point.
+    pub highlights: [f64; 4],
+    /// Shadows dynamic range expansion.
+    pub low_range: [f64; 4],
+    /// Highlights dynamic range expansion.
+    pub high_range: [f64; 4],
+    pub name: Option<String>,
+}
+
+impl DisplayFunction {
+    /// The identity function, which applies when an image declares none.
+    pub fn identity() -> Self {
+        DisplayFunction {
+            midtones: [0.5; 4],
+            shadows: [0.0; 4],
+            highlights: [1.0; 4],
+            low_range: [0.0; 4],
+            high_range: [1.0; 4],
+            name: None,
+        }
+    }
+
+    /// Whether this is the identity, and so can be skipped when displaying.
+    pub fn is_identity(&self) -> bool {
+        *self == DisplayFunction { name: self.name.clone(), ..DisplayFunction::identity() }
+    }
+
+    /// Parse a `<DisplayFunction>` element.
+    pub fn parse(element: &Element) -> Result<Self> {
+        if element.name != "DisplayFunction" {
+            return Err(err!(
+                InvalidArgument,
+                "expected <DisplayFunction>, got <{}>",
+                element.name
+            ));
+        }
+        let quad = |name: &str| -> Result<[f64; 4]> {
+            let text = element
+                .attr(name)
+                .ok_or_else(|| err!(BadHeader, "<DisplayFunction> has no {name}"))?;
+            colon_numbers::<4>("DisplayFunction", name, text)
+        };
+        Ok(DisplayFunction {
+            midtones: quad("m")?,
+            shadows: quad("s")?,
+            highlights: quad("h")?,
+            low_range: quad("l")?,
+            high_range: quad("r")?,
+            name: element.attr("name").map(str::to_owned),
+        })
+    }
+}
+
 /// One element of a colour filter array pattern.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CfaElement {

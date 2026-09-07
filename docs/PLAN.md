@@ -277,9 +277,20 @@ Still open:
   `Writer::to_distributed` returns the `.xish` header and the `.xisb` blocks
   file, and a round trip through the ordinary `Reader` is tested.
 - ~~Properties serialised as data blocks~~ — done for vectors and matrices.
-  `Table` remains, which is a separate core element rather than a `Property`.
+- ~~`Table` and `Structure`~~ — done. A table's shape lives in a `Structure`
+  that may be shared, and its cells are positional, so a row whose cell count
+  disagrees with the structure is refused rather than read into the wrong
+  columns.
 - ~~`ICCProfile`, `Thumbnail`, `Resolution`, `ColorFilterArray`~~ — done.
-  `DisplayFunction` remains, which is a display hint rather than data.
+- ~~`RGBWorkingSpace`, `DisplayFunction`~~ — done. Both default when absent
+  (sRGB and the identity), and both are exposed as `Option` so a writer can
+  tell "the file said nothing" from "the file said the default".
+- ~~`Reference`~~ — done, and it was the one gap that lost data silently.
+  An ancillary element may sit inside the element it belongs to *or* sit at
+  the root with a `uid`, pointed at by a `<Reference>` child — the second form
+  is how one thumbnail or colour space serves several images. Looking only at
+  direct children found none of it and reported no error. `Header::associated`
+  now follows both, and every lookup in the high-level API goes through it.
 - ~~`url:` locators~~ — done, via a caller-supplied resolver. The library
   never makes a network request itself: honouring a URL written in a file
   would let `open` on a local file reach a host the caller never named, which

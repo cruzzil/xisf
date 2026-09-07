@@ -34,10 +34,11 @@ use xisf_core::reader::ChecksumStatus;
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::image::{
-    Bounds, CfaElement, ColorFilterArray, ColorSpace, Image, PixelStorage, Resolution,
-    ResolutionUnit, SampleFormat,
+    Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, PixelStorage,
+    Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,
 };
 pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
+pub use xisf_core::table::{Cell, Field, Structure, Table};
 pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
 
 /// An open XISF file.
@@ -90,6 +91,27 @@ impl XisfFile {
                 })
             })
             .collect()
+    }
+
+    /// The file's table properties, wherever in the header they appear.
+    ///
+    /// A table is a property whose value cannot be written as a `<Property>`
+    /// element, so it is reached separately rather than through
+    /// [`XisfFile::properties`].
+    pub fn tables(&self) -> Vec<Table> {
+        let header = self.reader.header();
+        header
+            .root
+            .descendants()
+            .into_iter()
+            .filter(|e| e.name == "Table")
+            .filter_map(|element| Table::parse(element, header).ok())
+            .collect()
+    }
+
+    /// The table property with a given identifier, if the file has one.
+    pub fn table(&self, id: &str) -> Option<Table> {
+        self.tables().into_iter().find(|t| t.id == id)
     }
 
     /// The property with a given identifier, if the file has one.
@@ -245,7 +267,13 @@ impl<'a> ImageRef<'a> {
 
     /// The image's declared resolution, if it states one.
     pub fn resolution(&self) -> Option<Resolution> {
-        self.element.children_named("Resolution").find_map(|e| Resolution::parse(e).ok())
+        self.associated("Resolution").into_iter().find_map(|e| Resolution::parse(e).ok())
+    }
+
+    /// Elements of `name` belonging to this image, whether they sit inside it
+    /// or are shared through a `<Reference>`.
+    fn associated(&self, name: &'static str) -> Vec<&'a xisf_core::header::Element> {
+        self.file.reader.header().associated(self.element, name)
     }
 
     /// The image's embedded ICC colour profile, if it has one.
@@ -258,8 +286,31 @@ impl<'a> ImageRef<'a> {
     /// the bytes are handed over exactly as stored, which is what an ICC
     /// library expects.
     pub fn icc_profile(&self) -> Option<Result<Cow<'a, [u8]>>> {
-        let element = self.element.children_named("ICCProfile").next()?;
+        let element = *self.associated("ICCProfile").first()?;
         Some(self.file.reader.block(&element.data))
+    }
+
+    /// The image's RGB working space.
+    ///
+    /// `None` means the file declared none, in which case the space is sRGB
+    /// by the spec's default -- see [`RgbWorkingSpace::srgb`]. The two are
+    /// kept apart so a writer can round-trip a file that said nothing.
+    pub fn rgb_working_space(&self) -> Option<RgbWorkingSpace> {
+        self.associated("RGBWorkingSpace").into_iter().find_map(|e| RgbWorkingSpace::parse(e).ok())
+    }
+
+    /// The image's display function, which changes how it is shown rather
+    /// than what it contains.
+    ///
+    /// `None` means the file declared none, and the identity applies.
+    pub fn display_function(&self) -> Option<DisplayFunction> {
+        self.associated("DisplayFunction").into_iter().find_map(|e| DisplayFunction::parse(e).ok())
+    }
+
+    /// Table properties attached to this image.
+    pub fn tables(&self) -> Vec<Table> {
+        let header = self.file.reader.header();
+        self.associated("Table").into_iter().filter_map(|e| Table::parse(e, header).ok()).collect()
     }
 
     /// The image's colour filter array, if it is a mosaiced sensor image.
@@ -268,14 +319,14 @@ impl<'a> ImageRef<'a> {
     /// demosaicing; an encoder is forbidden from attaching one to an image
     /// that is not mosaiced, so this is a reliable signal rather than a hint.
     pub fn color_filter_array(&self) -> Option<ColorFilterArray> {
-        self.element
-            .children_named("ColorFilterArray")
+        self.associated("ColorFilterArray")
+            .into_iter()
             .find_map(|e| ColorFilterArray::parse(e).ok())
     }
 
     /// The image's thumbnail, if it carries one.
     pub fn thumbnail(&self) -> Option<ThumbnailRef<'a>> {
-        let element = self.element.children_named("Thumbnail").next()?;
+        let element = *self.associated("Thumbnail").first()?;
         let image = xisf_core::image::parse_thumbnail(element).ok()?;
         Some(ThumbnailRef { file: self.file, element, image })
     }

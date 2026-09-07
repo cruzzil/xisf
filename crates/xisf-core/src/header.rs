@@ -83,6 +83,39 @@ impl Header {
     }
 }
 
+impl Header {
+    /// The element with a given `uid`, if the header defines one.
+    pub fn by_uid(&self, uid: &str) -> Option<&Element> {
+        self.root.descendants().into_iter().find(|e| e.attr("uid") == Some(uid))
+    }
+
+    /// Every element of `name` associated with `owner`, following references.
+    ///
+    /// An element may sit inside the one it belongs to, or sit anywhere in
+    /// the header with a `uid` and be pointed at by a `<Reference ref="...">`
+    /// child. Both are ordinary and mean the same thing -- the second exists
+    /// so one thumbnail or colour profile can serve several images without
+    /// being serialised repeatedly.
+    ///
+    /// A reader that looked only at direct children would silently drop
+    /// everything a file chose to share, which is data loss with no error.
+    /// References cannot chain: the specification forbids a `Reference` from
+    /// carrying a `uid`, so following one is a single step and cannot loop.
+    pub fn associated<'a>(&'a self, owner: &'a Element, name: &'a str) -> Vec<&'a Element> {
+        let mut out: Vec<&Element> = owner.children_named(name).collect();
+
+        for reference in owner.children_named("Reference") {
+            let Some(uid) = reference.attr("ref") else { continue };
+            if let Some(target) = self.by_uid(uid)
+                && target.name == name
+            {
+                out.push(target);
+            }
+        }
+        out
+    }
+}
+
 /// Parse the header's XML text.
 pub fn parse(xml: &str) -> Result<Header> {
     let mut reader = Reader::from_str(xml);
@@ -358,6 +391,53 @@ mod tests {
     fn an_unknown_entity_is_an_error_rather_than_a_silent_gap() {
         let xml = r#"<xisf version="1.0"><Property id="t">&nosuch;</Property></xisf>"#;
         assert_eq!(parse(xml).unwrap_err().kind(), ErrorKind::BadHeader);
+    }
+
+    /// An element may be shared: defined once with a `uid` and pointed at by
+    /// a `<Reference>` inside each element that uses it. Looking only at
+    /// direct children loses it silently.
+    #[test]
+    fn references_associate_a_shared_element_with_its_owners() {
+        let xml = r#"<xisf version="1.0">
+            <Resolution uid="R" horizontal="300" vertical="300"/>
+            <Image geometry="2:2:1" sampleFormat="UInt8"><Reference ref="R"/></Image>
+            <Image geometry="4:4:1" sampleFormat="UInt8"><Reference ref="R"/></Image>
+            <Image geometry="8:8:1" sampleFormat="UInt8">
+                <Resolution horizontal="72" vertical="72"/>
+            </Image>
+        </xisf>"#;
+        let header = parse(xml).unwrap();
+        let images = header.images();
+        assert_eq!(images.len(), 3);
+
+        // The first two share one element by reference...
+        for image in &images[..2] {
+            let found = header.associated(image, "Resolution");
+            assert_eq!(found.len(), 1, "a referenced Resolution was not found");
+            assert_eq!(found[0].attr("horizontal"), Some("300"));
+        }
+        // ...and the third has its own, directly.
+        let own = header.associated(images[2], "Resolution");
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].attr("horizontal"), Some("72"));
+    }
+
+    #[test]
+    fn a_reference_to_nothing_or_to_the_wrong_kind_is_ignored() {
+        let xml = r#"<xisf version="1.0">
+            <Thumbnail uid="T" geometry="4:4:1" sampleFormat="UInt8"/>
+            <Image geometry="2:2:1" sampleFormat="UInt8">
+                <Reference ref="nosuch"/>
+                <Reference ref="T"/>
+            </Image>
+        </xisf>"#;
+        let header = parse(xml).unwrap();
+        let image = header.images()[0];
+
+        // A dangling reference is skipped rather than fatal; a reference to a
+        // Thumbnail does not answer a question about a Resolution.
+        assert!(header.associated(image, "Resolution").is_empty());
+        assert_eq!(header.associated(image, "Thumbnail").len(), 1);
     }
 
     #[test]

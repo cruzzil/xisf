@@ -125,3 +125,39 @@ fn generated_files_have_none_of_them() {
     assert!(image.icc_profile().is_none());
     assert!(image.thumbnail().is_none());
 }
+
+/// The spec lets an element be defined once, at the root, with a `uid`, and
+/// pointed at from each image that uses it. That is how one thumbnail or one
+/// colour profile serves a whole file without being stored several times.
+/// A reader that looks only at an image's own children finds none of it and
+/// reports no error, which is the worst failure available: silent data loss.
+#[test]
+fn shared_elements_reach_the_images_that_reference_them() {
+    // The image's own data goes in a <Data> child, because the element also
+    // holds the References and text alongside child elements would be
+    // ambiguous. This is the shape PixInsight uses for the same reason.
+    let body = r#"<xisf version="1.0">
+        <Resolution uid="res" horizontal="150" vertical="150" unit="inch"/>
+        <Thumbnail uid="thumb" geometry="2:2:1" sampleFormat="UInt8"
+                   location="inline:base64">AAECAw==</Thumbnail>
+        <Image geometry="2:2:1" sampleFormat="UInt8">
+            <Reference ref="res"/>
+            <Reference ref="thumb"/>
+            <Data location="inline:base64">AAECAw==</Data>
+        </Image>
+        </xisf>"#;
+
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(body.as_bytes());
+
+    let file = XisfFile::from_bytes(bytes).expect("read");
+    let image = &file.images()[0];
+
+    let resolution = image.resolution().expect("the referenced Resolution was dropped");
+    assert_eq!(resolution.horizontal, 150.0);
+
+    let thumbnail = image.thumbnail().expect("the referenced Thumbnail was dropped");
+    assert_eq!(thumbnail.bytes().expect("thumbnail block").as_ref(), &[0, 1, 2, 3]);
+}

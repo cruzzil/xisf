@@ -180,6 +180,31 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                     Err(e) => println!("       ICC profile: unreadable ({e})"),
                 }
             }
+            if let Some(space) = image.rgb_working_space() {
+                let gamma = match space.gamma {
+                    xisf::Gamma::Srgb => "sRGB".to_string(),
+                    xisf::Gamma::Exponent(g) => format!("gamma {g}"),
+                };
+                println!(
+                    "       RGBWS {}{gamma}",
+                    space.name.as_deref().map_or(String::new(), |n| format!("{n}, "))
+                );
+            }
+            if let Some(df) = image.display_function() {
+                println!(
+                    "       display function{}{}",
+                    df.name.as_deref().map_or(String::new(), |n| format!(" {n}")),
+                    if df.is_identity() { " (identity)" } else { "" }
+                );
+            }
+            for table in image.tables() {
+                println!(
+                    "       table {}, {} row(s) x {} column(s)",
+                    table.id,
+                    table.rows.len(),
+                    table.structure.fields.len()
+                );
+            }
 
             if options.verbose {
                 for (name, value, comment) in image.fits_keywords() {
