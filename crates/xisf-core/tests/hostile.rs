@@ -449,3 +449,78 @@ fn a_corrupt_blocks_file_never_panics() {
         }
     }
 }
+
+/// Subblock lengths are attacker-chosen numbers that drive slicing, so they
+/// get the same treatment as every other number in a header.
+#[cfg(feature = "zlib")]
+#[test]
+fn hostile_subblock_lengths_never_panic() {
+    use xisf_core::block::{Codec, Compression};
+
+    // A real compressed stream, so failures are about the lengths rather
+    // than about the payload being nonsense.
+    let stored = {
+        use std::io::Write;
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&vec![0x5au8; 1000]).expect("write");
+        encoder.finish().expect("finish")
+    };
+
+    let extremes = [0u64, 1, 39, u64::MAX / 2, u64::MAX - 1, u64::MAX];
+    let mut cases: Vec<Vec<(u64, u64)>> = Vec::new();
+    for a in extremes {
+        for b in extremes {
+            cases.push(vec![(a, b)]);
+            cases.push(vec![(a, b), (b, a)]);
+            cases.push(vec![(a, b), (a, b), (a, b)]);
+        }
+    }
+    // Plus lengths that sum correctly but split in the wrong places, which is
+    // the case a length check alone would let through.
+    let n = stored.len() as u64;
+    cases.push(vec![(0, 1000), (n, 0)]);
+    cases.push(vec![(n, 0), (0, 1000)]);
+    cases.push(vec![(1, 1), (n - 1, 999)]);
+    cases.push(vec![(n / 2, 500), (n - n / 2, 500)]);
+
+    for subblocks in cases {
+        let compression = Compression {
+            codec: Codec::Zlib,
+            uncompressed_size: 1000,
+            shuffle_item_size: None,
+            subblocks,
+        };
+        // Only that it returns rather than panicking, aborting or hanging.
+        let _ = xisf_core::codec::decode(&stored, &compression);
+    }
+}
+
+/// And through the front door, where the lengths come out of XML.
+#[test]
+fn hostile_subblock_attributes_never_panic() {
+    for subblocks in [
+        "0,0",
+        "18446744073709551615,18446744073709551615",
+        "1,1:1,1:1,1:1,1",
+        "-1,-1",
+        ",",
+        ":",
+        "1,",
+        ",1",
+        "1,1:",
+        &"1,1:".repeat(5000),
+    ] {
+        let xml = format!(
+            r#"<xisf version="1.0"><Image geometry="4:1:1" sampleFormat="UInt8" \
+compression="zlib:4" subblocks="{subblocks}" location="inline:base64">AAAAAA==</Image></xisf>"#
+        )
+        .replace("\\\n", "");
+
+        let mut bytes = Vec::from(*b"XISF0100");
+        bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 4]);
+        bytes.extend_from_slice(xml.as_bytes());
+        exercise(&bytes);
+    }
+}
