@@ -25,6 +25,7 @@ use crate::error::Result;
 use crate::image::{ColorFilterArray, DisplayFunction, Gamma, Image, Resolution, RgbWorkingSpace};
 use crate::layout::{PREAMBLE_LEN, SIGNATURE};
 use crate::reader::{checksum_of, digest_hex};
+use crate::table::Table;
 
 /// How a block should be stored.
 #[derive(Clone, Debug, Default)]
@@ -118,6 +119,8 @@ pub struct PendingImage {
     pub thumbnail: Option<PendingThumbnail>,
     /// FITS keywords, in the order they should appear.
     pub fits_keywords: Vec<FitsKeyword>,
+    /// Table properties belonging to this image.
+    pub tables: Vec<Table>,
 }
 
 /// A preview image attached to another image.
@@ -150,6 +153,7 @@ impl PendingImage {
             icc_profile: None,
             thumbnail: None,
             fits_keywords: Vec::new(),
+            tables: Vec::new(),
         }
     }
 
@@ -193,6 +197,12 @@ impl PendingImage {
         self
     }
 
+    /// Attach a table property to this image.
+    pub fn with_table(mut self, table: Table) -> Self {
+        self.tables.push(table);
+        self
+    }
+
     pub fn with_fits_keyword(
         mut self,
         name: impl Into<String>,
@@ -224,6 +234,9 @@ pub struct Writer {
     /// `XISF:CreationTime`, as an ISO 8601 instant. `None` means "now",
     /// resolved when the file is rendered.
     creation_time: Option<String>,
+    /// Standalone `<Table>` elements, belonging to the unit rather than to
+    /// any one image.
+    tables: Vec<Table>,
 }
 
 impl Writer {
@@ -250,8 +263,21 @@ impl Writer {
     }
 
     /// Add a string property to the file's `<Metadata>`.
-    pub fn add_metadata(&mut self, id: impl Into<String>, value: impl Into<String>) {
-        self.metadata.push((id.into(), "String".into(), value.into()));
+    ///
+    /// The identifier must satisfy the format's grammar, since a property
+    /// nothing can look up by name is not a property.
+    pub fn add_metadata(&mut self, id: impl Into<String>, value: impl Into<String>) -> Result<()> {
+        let id = id.into();
+        check_property_id(&id)?;
+        self.metadata.push((id, "String".into(), value.into()));
+        Ok(())
+    }
+
+    /// Add a table property describing the unit as a whole.
+    pub fn add_table(&mut self, table: Table) -> Result<()> {
+        check_table(&table)?;
+        self.tables.push(table);
+        Ok(())
     }
 
     /// Add an image, checking that its data matches the geometry it declares.
@@ -323,6 +349,9 @@ impl Writer {
 
         for keyword in &pending.fits_keywords {
             check_fits_name(&keyword.name)?;
+        }
+        for table in &pending.tables {
+            check_table(table)?;
         }
 
         self.images.push(pending);
@@ -607,7 +636,15 @@ impl Writer {
                 xml.push_str(&format!(" location=\"{}\"/>", locate(index)));
             }
 
+            for table in &pending.tables {
+                push_table(&mut xml, table);
+            }
+
             xml.push_str("</Image>");
+        }
+
+        for table in &self.tables {
+            push_table(&mut xml, table);
         }
 
         // `<Metadata>` is required by the spec, and it *must* carry both
@@ -698,6 +735,132 @@ fn push_block_attrs(xml: &mut String, block: &StoredBlock) {
             digest_hex(&checksum.digest)
         ));
     }
+}
+
+/// Check a table before it is written.
+///
+/// Cells are positional: which field a cell belongs to is decided by nothing
+/// but its place in the row. A row of the wrong length therefore has no
+/// reading at all, and writing one produces a file whose every value after
+/// the gap belongs to the wrong column.
+fn check_table(table: &Table) -> Result<()> {
+    check_property_id(&table.id)?;
+    if table.structure.fields.is_empty() {
+        return Err(err!(InvalidArgument, "table {:?} has no fields", table.id));
+    }
+    for field in &table.structure.fields {
+        check_property_id(&field.id)?;
+    }
+    for (n, row) in table.rows.iter().enumerate() {
+        if row.len() != table.structure.fields.len() {
+            return Err(err!(
+                InvalidArgument,
+                "table {:?} row {n} has {} cells but its structure declares {} fields",
+                table.id,
+                row.len(),
+                table.structure.fields.len()
+            ));
+        }
+        for cell in row {
+            // A cell whose value lives in a data block would need a block
+            // allocated for it, which this writer does not do. Saying so
+            // beats writing a `<Cell>` with no value in it.
+            if cell.data.location.is_some() {
+                return Err(err!(
+                    Unsupported,
+                    "table {:?} has a cell stored in a data block, which cannot be written yet",
+                    table.id
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Serialise one `<Table>` element and everything under it.
+fn push_table(xml: &mut String, table: &Table) {
+    xml.push_str(&format!("<Table id=\"{}\"", escape_attr(&table.id)));
+    if let Some(caption) = &table.caption {
+        xml.push_str(&format!(" caption=\"{}\"", escape_attr(caption)));
+    }
+    if let Some(comment) = &table.comment {
+        xml.push_str(&format!(" comment=\"{}\"", escape_attr(comment)));
+    }
+    // `rows` and `columns` are optional but must agree with the data when
+    // present, which is easy here and saves a reader from counting.
+    xml.push_str(&format!(
+        " rows=\"{}\" columns=\"{}\">",
+        table.rows.len(),
+        table.structure.fields.len()
+    ));
+
+    // The structure is written inline and before the rows, as the spec asks:
+    // it wants sequential parsers to know the shape before the data arrives.
+    xml.push_str("<Structure>");
+    for field in &table.structure.fields {
+        xml.push_str(&format!(
+            "<Field id=\"{}\" type=\"{}\"",
+            escape_attr(&field.id),
+            escape_attr(&field.kind.name())
+        ));
+        if let Some(format) = &field.format {
+            xml.push_str(&format!(" format=\"{}\"", escape_attr(format)));
+        }
+        if let Some(header) = &field.header {
+            xml.push_str(&format!(" header=\"{}\"", escape_attr(header)));
+        }
+        xml.push_str("/>");
+    }
+    xml.push_str("</Structure>");
+
+    for row in &table.rows {
+        xml.push_str("<Row>");
+        for cell in row {
+            match (&cell.value, &cell.data.text) {
+                (Some(value), _) => {
+                    xml.push_str(&format!("<Cell value=\"{}\"/>", escape_attr(value)));
+                }
+                (None, Some(text)) => {
+                    xml.push_str(&format!("<Cell>{}</Cell>", escape_text(text)));
+                }
+                (None, None) => xml.push_str("<Cell value=\"\"/>"),
+            }
+        }
+        xml.push_str("</Row>");
+    }
+    xml.push_str("</Table>");
+}
+
+/// Check a property identifier against the format's grammar.
+///
+/// An identifier is one or more colon-separated segments, each starting with
+/// a letter or underscore and continuing with letters, digits or underscores.
+/// The colons group properties into namespaces, which is why `XISF:` names
+/// are reserved and why an identifier is the only handle a reader has on a
+/// property.
+///
+/// A note for whoever checks this against the document: the regular
+/// expression the specification prints,
+/// `[_a-zA-Z][_a-zA-Z0-9]*(:([_a-zA-Z][_a-zA-Z0-9])+)*`, is wrong. Its
+/// namespace group matches *pairs* of characters -- a `*` is missing inside
+/// it -- so it rejects `foo:bar:Foo2_Bar3`, which the same section gives as a
+/// valid example three lines later. The evident intent is implemented here,
+/// since a grammar that refuses its own examples cannot be the one meant.
+fn check_property_id(id: &str) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.split(':').all(|segment| {
+            let mut chars = segment.chars();
+            chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        });
+    if !valid {
+        return Err(err!(
+            InvalidArgument,
+            "{id:?} is not a valid property identifier: one or more colon-separated \
+             segments, each beginning with a letter or underscore"
+        ));
+    }
+    Ok(())
 }
 
 /// Check a FITS keyword name against the FITS 3.0 grammar the spec cites.
@@ -1063,7 +1226,7 @@ mod tests {
     #[test]
     fn special_characters_in_metadata_are_escaped() {
         let mut writer = Writer::new();
-        writer.add_metadata("Test:Value", r#"a & b < c > d " e ' f"#);
+        writer.add_metadata("Test:Value", r#"a & b < c > d " e ' f"#).expect("id");
         writer
             .add_image(PendingImage::new(
                 image(2, 2, 1, SampleFormat::UInt8),

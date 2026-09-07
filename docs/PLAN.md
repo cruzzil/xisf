@@ -373,6 +373,19 @@ Still open:
   `xisf.pdb`. The C artifact name is an ABI contract -- a C caller writes
   `-lxisf` -- and a command name is not, so the command became `xisftool`, and
   the C crate dropped an `rlib` that nothing consumed.
+- ~~Writing tables, and validating property identifiers~~ — done. Tables were
+  readable but not writable, the same asymmetry the ancillary elements had, so
+  a read-modify-write dropped them. Cells whose values live in data blocks are
+  refused with a message rather than written empty, since this writer does not
+  allocate blocks for them.
+
+  An identifier is the only handle a reader has on a property, so it is
+  checked when one is written. Worth recording: **the regular expression the
+  specification prints for property identifiers rejects its own example.**
+  `[_a-zA-Z][_a-zA-Z0-9]*(:([_a-zA-Z][_a-zA-Z0-9])+)*` matches namespace
+  segments in *pairs* of characters -- a `*` is missing inside the group -- so
+  `foo:bar:Foo2_Bar3`, given as valid three lines later in the same section,
+  does not match it. The evident intent is what is implemented.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

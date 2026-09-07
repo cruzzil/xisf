@@ -33,6 +33,7 @@ use xisf_core::reader::ChecksumStatus;
 
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
+pub use xisf_core::header::DataRef;
 pub use xisf_core::image::{
     Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, Orientation,
     PixelStorage, Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,

@@ -420,3 +420,137 @@ fn thumbnails_may_not_declare_bounds_or_an_exotic_colour_space() {
         "a CIE L*a*b* thumbnail was accepted"
     );
 }
+
+/// An identifier is the only handle a reader has on a property, so one that
+/// does not satisfy the grammar makes the property unfindable.
+///
+/// The grammar implemented is the evident intent rather than the regular
+/// expression as printed: the spec's own expression matches namespace
+/// segments in pairs of characters, so it rejects `foo:bar:Foo2_Bar3`, which
+/// the same section offers as a valid example.
+#[test]
+fn property_identifiers_are_checked_against_the_grammar() {
+    let add = |id: &str| Writer::new().add_metadata(id, "x");
+
+    for good in [
+        "MyFirstProperty",
+        "mySecondOne234",
+        "_this_1_is_a_test",
+        "Namespace:Property",
+        // The example the spec's own regular expression rejects.
+        "foo:bar:Foo2_Bar3",
+        "XISF:CreationTime",
+    ] {
+        assert!(add(good).is_ok(), "{good:?} is one of the spec's own valid examples");
+    }
+    for bad in ["", "1leading", ":leading", "trailing:", "has space", "a::b", "dash-ed", "é"] {
+        assert!(add(bad).is_err(), "{bad:?} should be refused");
+    }
+}
+
+/// Tables were readable but not writable, so a read-modify-write dropped
+/// them silently -- the same asymmetry as the other ancillary elements.
+///
+/// The fixture is the spec's Messier catalogue example, attached to an image
+/// and standing alone, so both placements are covered.
+#[test]
+fn tables_survive_a_round_trip() {
+    use xisf::{Cell, DataRef, Field, PropertyType, Structure, Table};
+
+    let cell = |value: &str| Cell { value: Some(value.into()), data: DataRef::default() };
+    let field = |id: &str, kind: &str, header: &str| Field {
+        id: id.into(),
+        kind: PropertyType::parse(kind).expect("type"),
+        format: None,
+        header: Some(header.into()),
+    };
+
+    let messier = Table {
+        id: "MessierCatalog".into(),
+        structure: Structure {
+            uid: None,
+            fields: vec![
+                field("number", "UInt8", "Messier Number"),
+                field("ngc_ic", "String", "NGC/IC"),
+                field("commonName", "String", "Common Name"),
+            ],
+        },
+        rows: vec![
+            vec![cell("1"), cell("NGC 1952"), cell("Crab Nebula")],
+            vec![cell("2"), cell("NGC 7089"), cell("")],
+        ],
+        caption: Some("The Messier Catalog".into()),
+        comment: None,
+    };
+
+    let mut standalone = messier.clone();
+    standalone.id = "UnitWideCatalog".into();
+
+    let mut writer = Writer::new();
+    writer.add_table(standalone).expect("add_table");
+    writer
+        .add_image(
+            PendingImage::new(
+                image(2, 2, SampleFormat::UInt8, ColorSpace::Gray),
+                vec![0; 4],
+                BlockOptions::default(),
+            )
+            .with_table(messier.clone()),
+        )
+        .expect("add_image");
+
+    let file = XisfFile::from_bytes(writer.to_bytes().expect("write")).expect("read back");
+
+    let attached = file.images()[0].tables();
+    assert_eq!(attached.len(), 1, "the image's table was lost");
+    assert_eq!(attached[0], messier, "the image's table did not survive unchanged");
+
+    // Both the attached and the standalone one are found from the file.
+    let ids: Vec<String> = file.tables().iter().map(|t| t.id.clone()).collect();
+    assert!(ids.contains(&"MessierCatalog".into()), "{ids:?}");
+    assert!(ids.contains(&"UnitWideCatalog".into()), "{ids:?}");
+
+    // An empty cell stays empty rather than becoming absent: M2 has no
+    // popular name, which is not the same as the column being missing.
+    assert_eq!(attached[0].cell(1, "commonName").expect("cell").as_str(), Some(""));
+}
+
+/// A row of the wrong length has no reading at all, since which field a cell
+/// belongs to is decided by nothing but its position.
+#[test]
+fn a_table_whose_rows_do_not_match_its_structure_is_refused() {
+    use xisf::{Cell, DataRef, Field, PropertyType, Structure, Table};
+
+    let table = Table {
+        id: "t".into(),
+        structure: Structure {
+            uid: None,
+            fields: vec![
+                Field {
+                    id: "a".into(),
+                    kind: PropertyType::parse("Int32").expect("type"),
+                    format: None,
+                    header: None,
+                },
+                Field {
+                    id: "b".into(),
+                    kind: PropertyType::parse("Int32").expect("type"),
+                    format: None,
+                    header: None,
+                },
+            ],
+        },
+        rows: vec![vec![Cell { value: Some("1".into()), data: DataRef::default() }]],
+        caption: None,
+        comment: None,
+    };
+
+    assert!(Writer::new().add_table(table.clone()).is_err(), "a short row was accepted");
+
+    // And an identifier that is not one is refused for a table as for a
+    // property, since a table *is* a property.
+    let mut bad_id = table;
+    bad_id.rows.clear();
+    bad_id.id = "not an id".into();
+    assert!(Writer::new().add_table(bad_id).is_err(), "an invalid table id was accepted");
+}
