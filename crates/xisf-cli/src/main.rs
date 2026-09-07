@@ -12,10 +12,10 @@ use xisf::XisfFile;
 use xisf_core::block::Location;
 
 const USAGE: &str = "\
-xisf -- inspect XISF (Extensible Image Serialization Format) files
+xisftool -- inspect XISF (Extensible Image Serialization Format) files
 
 USAGE:
-    xisf <command> [options] <file>...
+    xisftool <command> [options] <file>...
 
 COMMANDS:
     info      Summarise a file: its images, geometry and metadata
@@ -34,7 +34,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(message) => {
-            eprintln!("xisf: {message}");
+            eprintln!("xisftool: {message}");
             ExitCode::FAILURE
         }
     }
@@ -61,7 +61,7 @@ fn run() -> Result<ExitCode, String> {
                 return Ok(ExitCode::SUCCESS);
             }
             "-V" | "--version" => {
-                println!("xisf {}", env!("CARGO_PKG_VERSION"));
+                println!("xisftool {}", env!("CARGO_PKG_VERSION"));
                 return Ok(ExitCode::SUCCESS);
             }
             "-v" | "--verbose" => verbose = true,
@@ -250,7 +250,7 @@ fn info(options: &Options) -> Result<ExitCode, String> {
 /// A vector or matrix has no textual form, and a long string may be a data
 /// block rather than character data -- one file in the corpus carries several
 /// kilobytes of base64 processing history. Printing those in full turns `info`
-/// into a dump, so their shape is shown instead and `xisf dump` is there for
+/// into a dump, so their shape is shown instead and `xisftool dump` is there for
 /// anyone who wants the bytes.
 fn describe(property: &xisf::PropertyRef<'_>) -> String {
     const LIMIT: usize = 80;

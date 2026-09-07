@@ -365,6 +365,14 @@ Still open:
   not declare `bounds` and must be grayscale or RGB; a FITS keyword name must
   satisfy the FITS 3.0 grammar the spec cites, since being readable as FITS is
   the element's only purpose. Both are checked where the file is built.
+- ~~Three targets named `xisf`~~ — fixed. The Rust library, the C ABI library
+  and the CLI binary all had the target name `xisf`, which collided twice in
+  cargo's output directory. The rlib collision cargo warned about and said may
+  become a hard error; the second one broke Windows builds intermittently,
+  because the C shared library and the CLI binary raced to write the same
+  `xisf.pdb`. The C artifact name is an ABI contract -- a C caller writes
+  `-lxisf` -- and a command name is not, so the command became `xisftool`, and
+  the C crate dropped an `rlib` that nothing consumed.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

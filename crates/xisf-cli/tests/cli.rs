@@ -16,7 +16,7 @@ fn binary() -> PathBuf {
     if path.ends_with("deps") {
         path.pop();
     }
-    path.join(if cfg!(windows) { "xisf.exe" } else { "xisf" })
+    path.join(if cfg!(windows) { "xisftool.exe" } else { "xisftool" })
 }
 
 fn corpus() -> PathBuf {

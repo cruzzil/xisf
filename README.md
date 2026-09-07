@@ -16,7 +16,7 @@ PixInsight Class Library; see [`docs/PLAN.md`](docs/PLAN.md) for the reasoning.
 | `xisf-core` | The engine. Layout, header, data blocks, codecs, checksums, properties, images. All the behaviour lives here. |
 | `xisf` | The idiomatic Rust API. |
 | `libxisf` | A C API of our own design. Builds `libxisf.so`. **Not** the unrelated C++ library of that name — see below. |
-| `xisf-cli` | The `xisf` command-line tool. |
+| `xisf-cli` | The `xisftool` command-line tool. |
 
 ## Using it from Rust
 
@@ -60,11 +60,11 @@ says so at the top.
 ## The command-line tool
 
 ```console
-$ xisf info image.xisf
-$ xisf info -v image.xisf     # with FITS keywords and properties
-$ xisf header image.xisf      # the raw XML
-$ xisf verify *.xisf          # check every recorded checksum
-$ xisf dump image.xisf > pixels.raw
+$ xisftool info image.xisf
+$ xisftool info -v image.xisf     # with FITS keywords and properties
+$ xisftool header image.xisf      # the raw XML
+$ xisftool verify *.xisf          # check every recorded checksum
+$ xisftool dump image.xisf > pixels.raw
 ```
 
 ## How correctness is judged

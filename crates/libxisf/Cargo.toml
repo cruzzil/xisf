@@ -14,7 +14,11 @@ authors.workspace = true
 # is harmless -- the two are never linked together -- and is the price of the
 # artifact having the name a C caller expects.
 name = "xisf"
-crate-type = ["cdylib", "staticlib", "rlib"]
+# No `rlib`: nothing in the workspace consumes this crate as a Rust library
+# -- the tests drive it through C, as a C caller would -- and an rlib here is
+# named `libxisf.rlib`, exactly what the `xisf` crate's own rlib is called.
+# Cargo warns about that collision and says it may become a hard error.
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
 xisf-core.workspace = true
