@@ -13,6 +13,20 @@ use std::path::PathBuf;
 
 use xisf_core::{ErrorKind, Reader};
 
+/// How wide the brute-force sweeps in this file go.
+///
+/// Miri interprets rather than executes, so a sweep of thousands of parses
+/// takes hours there rather than a second. Every sweep here is narrowed by
+/// this constant rather than skipped: under Miri these tests exist to check
+/// the memory map and the unsafe code a parse touches, which a handful of
+/// inputs exercises just as well, while the breadth belongs to the ordinary
+/// test run that happens on all six platforms.
+///
+/// A test that adds a sweep must scale it by this, or the Miri job runs past
+/// its half-hour budget and is killed -- which reads as a cancelled job
+/// rather than as a failure, so it is easy to miss.
+const SWEEP: usize = if cfg!(miri) { 24 } else { 600 };
+
 /// A scratch directory that removes itself.
 struct Scratch(PathBuf);
 
@@ -170,15 +184,6 @@ fn attachment_offsets_are_bounded_at_both_ends() {
     }
 }
 
-/// How wide the brute-force sweeps below go.
-///
-/// Miri interprets rather than executes, so a sweep of thousands of parses
-/// takes hours there rather than a second. It is narrowed rather than skipped:
-/// under Miri these tests exist to check the memory map and the unsafe code a
-/// parse touches, which a handful of inputs exercises just as well, while the
-/// breadth belongs to the ordinary test run on every platform.
-const SWEEP: usize = if cfg!(miri) { 24 } else { 600 };
-
 /// The whole corpus, truncated at every length, must never panic. A reader
 /// that indexes past the end on a short file is a crash in a decoder.
 #[test]
@@ -252,7 +257,10 @@ fn exercise(bytes: &[u8]) {
 /// 300,000 elements is 2MB of XML -- nothing, as uploads go.
 #[test]
 fn deeply_nested_xml_is_refused_rather_than_overflowing_the_stack() {
-    let depth = 300_000;
+    // Far past the limit when executing, just past it when interpreting:
+    // the property is that the limit holds, and 266 tests that as well as
+    // 300,000 does.
+    let depth = if cfg!(miri) { 266 } else { 300_000 };
     let mut xml = String::from(r#"<xisf version="1.0">"#);
     for _ in 0..depth {
         xml.push_str("<a>");
@@ -275,6 +283,12 @@ fn deeply_nested_xml_is_refused_rather_than_overflowing_the_stack() {
 /// A header that is mostly elements turns a small file into a large tree.
 /// The cap is on what the parser will build, not on what the caller asks for
 /// afterwards, because by then the memory is already committed.
+///
+/// Not run under Miri: the cap is a million elements, so exceeding it means
+/// parsing more than a million, and there is no smaller input that tests the
+/// same thing. It is a resource bound rather than a memory-safety property,
+/// so interpreting it buys nothing the native run does not already give.
+#[cfg_attr(miri, ignore)]
 #[test]
 fn an_absurd_number_of_elements_is_refused() {
     let mut xml = String::from(r#"<xisf version="1.0">"#);
@@ -371,7 +385,9 @@ fn a_block_that_fails_its_own_checksum_is_refused_by_default() {
 /// honestly describe.
 #[test]
 fn overlapping_index_nodes_cannot_multiply_into_a_memory_bomb() {
-    const SIZE: usize = 64 * 1024;
+    // Enough to declare far more elements than the file could hold, which is
+    // the property, without walking thousands of nodes under interpretation.
+    const SIZE: usize = if cfg!(miri) { 4 * 1024 } else { 64 * 1024 };
     let mut blocks = vec![0u8; SIZE];
     blocks[..8].copy_from_slice(b"XISB0100");
 
@@ -390,7 +406,12 @@ fn overlapping_index_nodes_cannot_multiply_into_a_memory_bomb() {
         declared += u64::from(count);
         position = next;
     }
-    assert!(declared > 1_000_000, "the construction should declare millions: {declared}");
+    // A file of SIZE bytes can hold SIZE/40 blocks; the construction claims
+    // orders of magnitude more than that, which is what must be refused.
+    assert!(
+        declared > (SIZE / 40) as u64 * 100,
+        "the construction should overclaim by orders of magnitude: {declared}"
+    );
 
     // A 64KB file can describe at most 1,638 blocks, since each costs forty
     // bytes on disk. It claims over a million.
@@ -431,17 +452,17 @@ fn a_corrupt_blocks_file_never_panics() {
         }
     };
 
-    for n in 0..original.len() {
+    for n in 0..original.len().min(SWEEP) {
         probe(&original[..n]);
     }
-    for i in 0..original.len() {
+    for i in 0..original.len().min(SWEEP) {
         let mut bytes = original.clone();
         bytes[i] ^= 0xff;
         probe(&bytes);
     }
     // Every byte of the first index node set to each extreme, since that is
     // where the counts and pointers live.
-    for i in 16..original.len().min(96) {
+    for i in 16..original.len().min(16 + SWEEP / 8) {
         for value in [0x00, 0x01, 0x7f, 0x80, 0xff] {
             let mut bytes = original.clone();
             bytes[i] = value;
@@ -467,10 +488,16 @@ fn hostile_subblock_lengths_never_panic() {
         encoder.finish().expect("finish")
     };
 
-    let extremes = [0u64, 1, 39, u64::MAX / 2, u64::MAX - 1, u64::MAX];
+    // The interesting values are the boundaries; under Miri the middle of
+    // the matrix is dropped, since each case is a real zlib call.
+    let extremes: &[u64] = if cfg!(miri) {
+        &[0, 1, u64::MAX]
+    } else {
+        &[0, 1, 39, u64::MAX / 2, u64::MAX - 1, u64::MAX]
+    };
     let mut cases: Vec<Vec<(u64, u64)>> = Vec::new();
-    for a in extremes {
-        for b in extremes {
+    for &a in extremes {
+        for &b in extremes {
             cases.push(vec![(a, b)]);
             cases.push(vec![(a, b), (b, a)]);
             cases.push(vec![(a, b), (a, b), (a, b)]);

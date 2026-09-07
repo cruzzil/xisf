@@ -114,6 +114,18 @@ fn every_sample_file_reads_and_verifies() {
             if element.data.location.is_none() {
                 continue;
             }
+            // Under Miri the large blocks are skipped: decompressing a
+            // 480KB thumbnail and hashing it interpreted rather than
+            // executed costs minutes, and the code path it exercises is the
+            // one the smaller blocks in the same loop already cover. Size is
+            // the only thing that differs, and size is not what Miri checks.
+            // The native run on all six platforms reads every block.
+            if cfg!(miri)
+                && let Some(compression) = &element.data.compression
+                && compression.uncompressed_size > 64 * 1024
+            {
+                continue;
+            }
             // Only when a hash implementation is compiled in; otherwise
             // `verify` correctly reports that it cannot check.
             if cfg!(feature = "checksums") {

@@ -47,6 +47,17 @@ fn every_generated_file_reads_back_exactly() {
         return;
     }
 
+    // Under Miri this is checking that decoding is memory-safe, not that it
+    // is correct: correctness is what the native run on six platforms is for,
+    // and it reads every file. Decompressing forty images interpreted rather
+    // than executed costs minutes, which is most of the Miri job's budget
+    // spent re-deriving what the other ten jobs already established. A
+    // stride keeps the sample spread across codecs and sample formats rather
+    // than taking the first few, which sort together by name.
+    if cfg!(miri) {
+        files = files.into_iter().step_by(9).collect();
+    }
+
     let (mut matched, mut unsupported) = (0usize, Vec::new());
 
     for path in &files {

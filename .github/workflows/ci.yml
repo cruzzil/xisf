@@ -125,9 +125,24 @@ jobs:
   miri:
     runs-on: ubuntu-latest
     # A Miri run that stops making progress otherwise sits for GitHub's
-    # six-hour default, which reads as "still going" rather than as a
-    # failure. Ten times the normal duration is enough headroom.
-    timeout-minutes: 30
+    # six-hour default, which reads as "still going" rather than as a failure.
+    #
+    # This bound is for catching a hang, not for enforcing a time budget.
+    # Miri interprets rather than executes, so the suite legitimately takes
+    # ten to fifteen minutes here and grows whenever tests are added; a bound
+    # set close to the current duration turns every addition into a spurious
+    # failure. An earlier thirty minutes was exactly that mistake, and it
+    # killed the job repeatedly while the suite grew under it.
+    #
+    # Read this before concluding the job was cancelled: GitHub reports a
+    # timeout kill as **cancelled**, not as a failure, so a job killed here
+    # looks identical at a glance to one cancelled by fail-fast or by hand.
+    # If the miri job says cancelled, check its duration first -- a duration
+    # equal to this bound means it ran out of budget. The usual cause is a
+    # new brute-force sweep in tests/hostile.rs that was not scaled by the
+    # SWEEP constant there, since a sweep costing a second natively costs an
+    # hour under interpretation.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -137,9 +152,11 @@ jobs:
       - name: Miri
         env:
           MIRIFLAGS: -Zmiri-disable-isolation
+        # Timed, so the log says how close the budget came to running out
+        # rather than leaving that to be inferred from the job's duration.
         run: |
-          cargo +nightly miri test -p xisf-core
-          cargo +nightly miri test -p libxisf --lib
+          time cargo +nightly miri test -p xisf-core
+          time cargo +nightly miri test -p libxisf --lib
 
   lint:
     runs-on: ubuntu-latest
