@@ -222,3 +222,44 @@ fn a_closed_pipe_is_not_a_panic() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains("panicked"), "the tool panicked on a closed pipe:\n{stderr}");
 }
+
+/// This tool must build against `xisf` alone.
+///
+/// It is the first real consumer of the library, so what it can and cannot
+/// reach is a fair test of whether the public API is complete -- and it found
+/// a genuine gap: `verify()` returned a `ChecksumStatus` the crate did not
+/// re-export, so its result could not be matched on without depending on the
+/// engine. Adding `xisf-core` here would make that class of gap invisible
+/// again, since the tool could simply reach past the facade rather than the
+/// facade being fixed.
+///
+/// Checked against the manifest rather than left to a comment: a convention
+/// nothing enforces is one refactor from being gone.
+#[test]
+fn the_tool_depends_on_the_public_library_only() {
+    let manifest =
+        std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("this crate's manifest");
+
+    // Section-aware: `[lints] workspace = true` and the comment above the
+    // dependency list both mention other things, so a bare substring search
+    // over the whole file would be answering a different question.
+    let mut in_deps = false;
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_deps = line == "[dependencies]" || line == "[dev-dependencies]";
+            continue;
+        }
+        if !in_deps || line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+        let name = line.split(['=', '.', ' ']).next().unwrap_or_default();
+        assert_ne!(
+            name, "xisf-core",
+            "xisftool depends on xisf-core again. Whatever it needs should be \
+             re-exported from `xisf` instead: this tool exists partly to prove \
+             the public API is enough to build a real program against."
+        );
+    }
+}
