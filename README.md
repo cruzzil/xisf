@@ -16,7 +16,7 @@ PixInsight Class Library; see [`docs/PLAN.md`](docs/PLAN.md) for the reasoning.
 | `xisf-core` | The engine. Layout, header, data blocks, codecs, checksums, properties, images. All the behaviour lives here. |
 | `xisf` | The idiomatic Rust API. |
 | `libxisf` | A C API of our own design. Builds `libxisf.so`. **Not** the unrelated C++ library of that name — see below. |
-| `xisf-cli` | The `xisftool` command-line tool. |
+| `xisftool` | The command-line tool of the same name. |
 
 ## Using it from Rust
 

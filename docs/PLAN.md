@@ -175,7 +175,7 @@ public APIs cannot drift apart in semantics.
 | `xisf-core` | The engine. Header parse/emit, data blocks, codecs, checksums, properties, images. All behaviour lives here. |
 | `xisf` | The idiomatic Rust API. Published under the name already held. |
 | `xisf-c` | **Our own** C ABI, with headers we author. Usable from C and C++. Explicitly *not* a libXISF binary drop-in — see §1. |
-| `xisf-cli` | A command-line tool: inspect, verify checksums, dump blocks, convert. |
+| `xisftool` | A command-line tool: inspect, verify checksums, dump blocks, convert. |
 
 XML handling uses `quick-xml` (MIT) rather than a hand-written parser: unlike
 ASDF's YAML — where libasdf's C `strtod` semantics forced a bespoke scalar
@@ -266,7 +266,7 @@ Plus, carried over from the ASDF project because they earned their place:
 6. ~~**`xisf-c`**~~ — done, and named `libxisf` at the user's request. Its own
    header, a C conformance harness compiling real C with `-Werror`, and Miri
    from the first commit.
-7. ~~**`xisf-cli`**~~ — done: `info`, `header`, `verify`, `dump`.
+7. ~~**`xisftool`**~~ — done: `info`, `header`, `verify`, `dump`.
 8. ~~**Distributed (non-monolithic) XISF**~~ — done for reading: `.xish`
    header files, and `.xisb` data blocks files with their linked-list block
    index. Writing a distributed unit is not wired into `Writer` yet.

@@ -4,7 +4,7 @@ members = [
     "crates/xisf-core",
     "crates/xisf",
     "crates/libxisf",
-    "crates/xisf-cli",
+    "crates/xisftool",
 ]
 
 [workspace.package]

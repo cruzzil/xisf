@@ -116,7 +116,7 @@ fn verify_fails_on_a_corrupted_block() {
     bytes[target] ^= 0xff;
     drop(file);
 
-    let dir = std::env::temp_dir().join(format!("xisf-cli-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("xisftool-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let corrupted = dir.join("corrupted.xisf");
     std::fs::write(&corrupted, &bytes).unwrap();

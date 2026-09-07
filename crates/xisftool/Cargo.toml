@@ -1,0 +1,38 @@
+[package]
+name = "xisftool"
+description = "Command-line tool for inspecting XISF files"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The package, the binary and the command are all `xisftool`, so `cargo
+# install xisftool` gives you a command of that name -- the mismatch that makes
+# `fd-find` hard to find is worth avoiding while it is still free to.
+#
+# Not `xisf`: that name is taken twice over, by this workspace's Rust library
+# and by the C ABI crate whose artifacts must be `libxisf` for a C caller to
+# link them. Three targets of one name collide in cargo's output directory,
+# and on Windows the binary and the C shared library raced to write the same
+# `xisf.pdb`, failing the build intermittently. The C artifact name is an ABI
+# contract; a command name is not, so the command is what moved.
+[[bin]]
+name = "xisftool"
+path = "src/main.rs"
+# A `main.rs` has no public API to publish.
+doc = false
+
+# `xisf` only. The engine crate is deliberately absent: this binary is the
+# first real consumer of the library, so what it needs is a fair test of
+# whether the public API is complete. Reaching past it into `xisf-core` would
+# hide gaps that every other consumer would then hit too.
+[dependencies]
+xisf.workspace = true
+
+[dev-dependencies]
+xisf.workspace = true
+
+[lints]
+workspace = true
