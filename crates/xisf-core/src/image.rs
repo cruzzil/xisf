@@ -155,6 +155,68 @@ pub struct Image {
     pub id: Option<String>,
     pub uuid: Option<String>,
     pub image_type: Option<String>,
+    /// A pedestal added to every sample, which must be subtracted to get
+    /// zero-based values. The spec's default is zero.
+    ///
+    /// This is not cosmetic: calibration and integration subtract it, so an
+    /// image read without it has the wrong zero point.
+    pub offset: Option<f64>,
+    /// How the image should be reoriented for display. `None` is the spec's
+    /// default of no transformation.
+    ///
+    /// A decoder must *not* apply this for processing that depends on the
+    /// physical layout of the pixels -- calibration frames would no longer
+    /// line up -- so it is kept as a declaration rather than applied here.
+    pub orientation: Option<Orientation>,
+}
+
+/// The `orientation` attribute: a rotation, and optionally a horizontal flip.
+///
+/// The rotation is counter-clockwise in degrees, and the flip is applied
+/// after it, which is the order the spec's `90;flip` spelling implies.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Orientation {
+    /// One of 0, 90, 180 or -90.
+    pub rotation: i16,
+    pub flip_horizontal: bool,
+}
+
+impl Orientation {
+    /// Parse an `orientation` attribute.
+    pub fn parse(text: &str) -> Result<Self> {
+        let (rotation, flip_horizontal) = match text.strip_suffix(";flip") {
+            Some(rest) => (rest, true),
+            None => match text {
+                "flip" => ("0", true),
+                rest => (rest, false),
+            },
+        };
+        let rotation = match rotation {
+            "0" => 0,
+            "90" => 90,
+            "180" => 180,
+            "-90" => -90,
+            other => {
+                return Err(err!(BadAttribute, "unknown orientation rotation {other:?}"));
+            }
+        };
+        Ok(Orientation { rotation, flip_horizontal })
+    }
+
+    /// The attribute text for this orientation.
+    pub fn to_attribute(self) -> String {
+        match (self.rotation, self.flip_horizontal) {
+            (0, false) => "0".into(),
+            (0, true) => "flip".into(),
+            (rotation, false) => rotation.to_string(),
+            (rotation, true) => format!("{rotation};flip"),
+        }
+    }
+
+    /// Whether this leaves the image as stored.
+    pub fn is_identity(self) -> bool {
+        self.rotation == 0 && !self.flip_horizontal
+    }
 }
 
 impl Image {
@@ -204,6 +266,14 @@ impl Image {
             id: element.attr("id").map(str::to_owned),
             uuid: element.attr("uuid").map(str::to_owned),
             image_type: element.attr("imageType").map(str::to_owned),
+            offset: match element.attr("offset") {
+                None => None,
+                Some(text) => Some(parse_offset(text)?),
+            },
+            orientation: match element.attr("orientation") {
+                None => None,
+                Some(text) => Some(Orientation::parse(text)?),
+            },
         })
     }
 
@@ -354,6 +424,18 @@ impl Resolution {
             ResolutionUnit::Centimetre => (self.horizontal * 2.54, self.vertical * 2.54),
         }
     }
+}
+
+/// Parse an `offset` attribute: a pedestal, which cannot be negative.
+fn parse_offset(text: &str) -> Result<f64> {
+    let value = text
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| err!(BadAttribute, "<Image> offset={text:?} is not a number"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(err!(BadAttribute, "<Image> offset must be zero or positive, got {value}"));
+    }
+    Ok(value)
 }
 
 /// Split a colon-separated list of `n` floating point numbers.

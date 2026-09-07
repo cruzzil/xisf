@@ -30,17 +30,15 @@ fn image(width: u64, height: u64, channels: u64, format: SampleFormat) -> Image 
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     }
 }
 
 fn write_file(image: Image, data: Vec<u8>, compression: Option<CompressionRequest>) -> Vec<u8> {
     let mut writer = Writer::new().with_creator("xisf-rs");
     writer
-        .add_image(PendingImage {
-            image,
-            data,
-            options: BlockOptions { compression, checksum: None },
-        })
+        .add_image(PendingImage::new(image, data, BlockOptions { compression, checksum: None }))
         .expect("add_image");
     writer.to_bytes().expect("to_bytes")
 }

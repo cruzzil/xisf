@@ -24,8 +24,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use xisf_core::block::ChecksumAlgorithm;
-use xisf_core::image::{ColorSpace, Image, PixelStorage, SampleFormat};
-use xisf_core::writer::{BlockOptions, Codec2, CompressionRequest, PendingImage, Writer};
+use xisf_core::image::{
+    ColorSpace, DisplayFunction, Image, PixelStorage, Resolution, ResolutionUnit, RgbWorkingSpace,
+    SampleFormat,
+};
+use xisf_core::writer::{
+    BlockOptions, Codec2, CompressionRequest, PendingImage, PendingThumbnail, Writer,
+};
 
 fn verifier() -> Option<PathBuf> {
     let path = PathBuf::from(std::env::var_os("XISF_VERIFY")?);
@@ -43,6 +48,8 @@ fn image(width: u64, height: u64, channels: u64, format: SampleFormat) -> Image 
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     }
 }
 
@@ -111,11 +118,11 @@ fn libxisf_reads_what_we_write() {
 
         let mut writer = Writer::new().with_creator("xisf-rs");
         writer
-            .add_image(PendingImage {
+            .add_image(PendingImage::new(
                 image,
                 data,
-                options: BlockOptions { compression: *compression, checksum: *checksum },
-            })
+                BlockOptions { compression: *compression, checksum: *checksum },
+            ))
             .expect("add_image");
         let bytes = writer.to_bytes().expect("to_bytes");
 
@@ -150,9 +157,66 @@ fn libxisf_reads_what_we_write() {
         }
     }
 
+    // One file carrying every ancillary element. These changed the shape of
+    // the emitted XML -- an `<Image>` with children rather than a self-closing
+    // one, and three data blocks belonging to a single image -- so an
+    // independent reader is the check that the change is still conforming and
+    // not merely self-consistent.
+    {
+        let main = image(23, 19, 3, SampleFormat::UInt16);
+        let expected = main.data_size().expect("size");
+        let data: Vec<u8> = (0..expected as usize).map(|i| (i * 7 + 1) as u8).collect();
+        let thumbnail = image(8, 8, 1, SampleFormat::UInt8);
+        let thumbnail_data = vec![0x40u8; thumbnail.data_size().expect("size") as usize];
+
+        let mut writer = Writer::new().with_creator("xisf-rs");
+        writer
+            .add_image(
+                PendingImage::new(main, data, BlockOptions::default())
+                    .with_resolution(Resolution {
+                        horizontal: 300.0,
+                        vertical: 300.0,
+                        unit: ResolutionUnit::Inch,
+                    })
+                    .with_rgb_working_space(RgbWorkingSpace::srgb())
+                    .with_display_function(DisplayFunction::identity())
+                    .with_icc_profile(vec![0u8; 128])
+                    .with_thumbnail(PendingThumbnail::new(
+                        thumbnail,
+                        thumbnail_data,
+                        BlockOptions::default(),
+                    ))
+                    .with_fits_keyword("EXPTIME", "300.0", "seconds"),
+            )
+            .expect("add_image");
+
+        let path = dir.join("ancillary.xisf");
+        std::fs::write(&path, writer.to_bytes().expect("to_bytes")).expect("write");
+        // `--ancillary` makes the verifier require that libXISF actually
+        // found the profile, thumbnail and keywords, not merely that the file
+        // parsed: an element another implementation cannot see is, for that
+        // implementation, an element that is not there.
+        let output = Command::new(&verify)
+            .arg(&path)
+            .arg(expected.to_string())
+            .arg("--ancillary")
+            .output()
+            .expect("run the verifier");
+        if output.status.success() {
+            passed += 1;
+        } else {
+            failures.push(format!(
+                "ancillary.xisf: {}{}",
+                String::from_utf8_lossy(&output.stderr).trim(),
+                String::from_utf8_lossy(&output.stdout).trim()
+            ));
+        }
+    }
+    let total = cases.len() + 1;
+
     let _ = std::fs::remove_dir_all(&dir);
 
-    eprintln!("libXISF read {passed} of {} files we wrote", cases.len());
+    eprintln!("libXISF read {passed} of {total} files we wrote");
     assert!(
         failures.is_empty(),
         "libXISF could not read {} of the files we wrote:\n  {}",

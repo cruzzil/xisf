@@ -205,12 +205,14 @@ fn a_distributed_unit_written_here_reads_back() {
             id: None,
             uuid: None,
             image_type: None,
+            offset: None,
+            orientation: None,
         };
         let size = image.data_size().unwrap() as usize;
         let data: Vec<u8> = (0..size).map(|i| (i * 13 + index * 7) as u8).collect();
         expected.push(data.clone());
         writer
-            .add_image(PendingImage { image, data, options: BlockOptions::default() })
+            .add_image(PendingImage::new(image, data, BlockOptions::default()))
             .expect("add_image");
     }
 
@@ -267,16 +269,18 @@ fn the_reader_resolves_a_written_distributed_unit() {
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     };
     let size = image.data_size().unwrap() as usize;
     let data: Vec<u8> = (0..size).map(|i| (i * 5 + 1) as u8).collect();
 
     let mut writer = Writer::new();
     writer
-        .add_image(PendingImage {
+        .add_image(PendingImage::new(
             image,
-            data: data.clone(),
-            options: BlockOptions {
+            data.clone(),
+            BlockOptions {
                 // Compressed, so the block is not merely a copy of the input.
                 compression: Some(CompressionRequest {
                     codec: xisf_core::writer::Codec2::Zlib,
@@ -284,7 +288,7 @@ fn the_reader_resolves_a_written_distributed_unit() {
                 }),
                 checksum: None,
             },
-        })
+        ))
         .unwrap();
 
     let unit = writer.to_distributed("blocks.xisb").expect("to_distributed");
@@ -311,4 +315,52 @@ fn a_blocks_file_name_must_be_a_plain_name() {
     for name in ["", "sub/dir.xisb", "/absolute.xisb"] {
         assert!(Writer::new().to_distributed(name).is_err(), "{name:?} should have been refused");
     }
+}
+
+/// A distributed unit's header file opens directly.
+///
+/// A `.xish` is XML with no signature, so it used to be rejected outright and
+/// the only way to read one was to wrap it in a monolithic file by hand. The
+/// writer produces these, which made them a form the library could emit but
+/// not read back.
+#[test]
+fn a_header_file_opens_without_being_wrapped() {
+    let scratch = Scratch::new("xish-open");
+    let data = pixels();
+    let blocks = vec![(1u64, data.clone())];
+    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&blocks).unwrap()).unwrap();
+
+    let path = scratch.join("unit.xish");
+    std::fs::write(&path, header_naming("path(data.xisb):0x1")).unwrap();
+
+    let reader = Reader::open(&path).expect("a .xish should open");
+    let image = reader.header().images()[0];
+    assert_eq!(&*reader.block(&image.data).expect("block"), &data[..]);
+}
+
+/// Detection is by content, not by suffix, and the two forms cannot collide:
+/// an XML document cannot begin with the eight signature bytes.
+#[test]
+fn the_two_file_forms_are_told_apart_by_what_they_contain() {
+    let scratch = Scratch::new("forms");
+    let xml = header_naming("inline:base64");
+
+    // A header file under the wrong name still opens...
+    let odd = scratch.join("unit.xisf");
+    std::fs::write(&odd, &xml).unwrap();
+    assert!(Reader::open(&odd).is_ok(), "a header file was refused for its name");
+
+    // ...a leading byte order mark is tolerated, since UTF-8 XML may carry
+    // one and it is not part of the document...
+    let bom = scratch.join("bom.xish");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(xml.as_bytes());
+    std::fs::write(&bom, &bytes).unwrap();
+    assert!(Reader::open(&bom).is_ok(), "a byte order mark was not skipped");
+
+    // ...and something that is neither is still refused as neither.
+    let junk = scratch.join("junk.xisf");
+    std::fs::write(&junk, b"not xisf and not xml either").unwrap();
+    let err = Reader::open(&junk).expect_err("arbitrary bytes were accepted");
+    assert_eq!(err.kind(), xisf_core::ErrorKind::NotXisf);
 }

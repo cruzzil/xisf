@@ -34,12 +34,15 @@ use xisf_core::reader::ChecksumStatus;
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::image::{
-    Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, PixelStorage,
-    Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,
+    Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, Orientation,
+    PixelStorage, Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,
 };
 pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
 pub use xisf_core::table::{Cell, Field, Structure, Table};
-pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
+pub use xisf_core::writer::{
+    BlockOptions, Codec2 as WriteCodec, CompressionRequest, DistributedUnit, FitsKeyword,
+    PendingImage, PendingThumbnail, Writer,
+};
 
 /// An open XISF file.
 #[derive(Debug)]
@@ -523,7 +526,7 @@ mod tests {
     fn write(image: Image, data: Vec<u8>) -> XisfFile {
         let mut writer = Writer::new();
         writer
-            .add_image(PendingImage { image, data, options: BlockOptions::default() })
+            .add_image(PendingImage::new(image, data, BlockOptions::default()))
             .expect("add_image");
         XisfFile::from_bytes(writer.to_bytes().expect("to_bytes")).expect("read back")
     }
@@ -539,6 +542,8 @@ mod tests {
             id: None,
             uuid: None,
             image_type: None,
+            offset: None,
+            orientation: None,
         }
     }
 

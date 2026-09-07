@@ -39,6 +39,8 @@ fn image_of(format: SampleFormat) -> Image {
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     }
 }
 
@@ -53,11 +55,7 @@ fn build(format: SampleFormat, compression: Option<CompressionRequest>) -> XisfF
     let data = pixels(image.data_size().expect("size") as usize);
     let mut writer = Writer::new();
     writer
-        .add_image(PendingImage {
-            image,
-            data,
-            options: BlockOptions { compression, checksum: None },
-        })
+        .add_image(PendingImage::new(image, data, BlockOptions { compression, checksum: None }))
         .expect("add_image");
     XisfFile::from_bytes(writer.to_bytes().expect("to_bytes")).expect("read back")
 }
@@ -119,14 +117,11 @@ mod read {
         let data = pixels(image.data_size().unwrap() as usize);
         let mut writer = Writer::new();
         writer
-            .add_image(PendingImage {
+            .add_image(PendingImage::new(
                 image,
                 data,
-                options: BlockOptions {
-                    compression: None,
-                    checksum: Some(xisf::ChecksumAlgorithm::Sha256),
-                },
-            })
+                BlockOptions { compression: None, checksum: Some(xisf::ChecksumAlgorithm::Sha256) },
+            ))
             .unwrap();
         let file = XisfFile::from_bytes(writer.to_bytes().unwrap()).unwrap();
         bencher.bench(|| file.images()[0].verify().expect("verify"));
@@ -144,11 +139,7 @@ mod write {
         bencher.bench(|| {
             let mut writer = Writer::new();
             writer
-                .add_image(PendingImage {
-                    image: image.clone(),
-                    data: data.clone(),
-                    options: BlockOptions::default(),
-                })
+                .add_image(PendingImage::new(image.clone(), data.clone(), BlockOptions::default()))
                 .unwrap();
             writer.to_bytes().unwrap().len()
         });
@@ -165,11 +156,11 @@ mod write {
         bencher.bench(|| {
             let mut writer = Writer::new();
             writer
-                .add_image(PendingImage {
-                    image: image.clone(),
-                    data: data.clone(),
-                    options: BlockOptions { compression: Some(request), checksum: None },
-                })
+                .add_image(PendingImage::new(
+                    image.clone(),
+                    data.clone(),
+                    BlockOptions { compression: Some(request), checksum: None },
+                ))
                 .unwrap();
             writer.to_bytes().unwrap().len()
         });

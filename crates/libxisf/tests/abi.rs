@@ -156,20 +156,22 @@ fn write_sample(path: &Path) {
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     };
     let size = image.data_size().unwrap() as usize;
     let data: Vec<u8> = (0..size).map(|i| (i * 11 + 3) as u8).collect();
 
     let mut writer = Writer::new();
     writer
-        .add_image(PendingImage {
+        .add_image(PendingImage::new(
             image,
             data,
-            options: BlockOptions {
+            BlockOptions {
                 compression: None,
                 checksum: Some(xisf_core::block::ChecksumAlgorithm::Sha256),
             },
-        })
+        ))
         .unwrap();
     std::fs::write(path, writer.to_bytes().unwrap()).unwrap();
 }

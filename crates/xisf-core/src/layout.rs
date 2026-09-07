@@ -27,7 +27,17 @@ impl Layout {
 }
 
 /// Read the preamble and locate the header.
+///
+/// Both forms the spec defines are accepted. A *monolithic* file begins with
+/// the signature and carries its blocks after the header. A *header file* --
+/// the `.xish` half of a distributed unit -- is XML and nothing else, with its
+/// blocks in a separate `.xisb` the header names. The two cannot be confused:
+/// the signature is eight fixed bytes, and an XML document cannot begin with
+/// them, so the form is decided by looking rather than by trusting a suffix.
 pub fn scan(bytes: &[u8]) -> Result<Layout> {
+    if !bytes.starts_with(SIGNATURE) && looks_like_xml(bytes) {
+        return Ok(Layout { header: (0, bytes.len()) });
+    }
     if bytes.len() < PREAMBLE_LEN {
         return Err(err!(
             Truncated,
@@ -76,6 +86,17 @@ pub fn scan(bytes: &[u8]) -> Result<Layout> {
 pub fn header_str<'a>(bytes: &'a [u8], layout: &Layout) -> Result<&'a str> {
     let raw = &bytes[layout.header.0..layout.header.1];
     std::str::from_utf8(raw).map_err(|e| err!(BadHeader, "the header is not valid UTF-8: {e}"))
+}
+
+/// Whether these bytes open an XML document rather than a monolithic file.
+///
+/// Only the opening delimiter is looked for, after any byte order mark and
+/// leading whitespace: deciding the *form* is all this does, and whether the
+/// document is well-formed is the parser's business to report properly.
+fn looks_like_xml(bytes: &[u8]) -> bool {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    let start = bytes.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(bytes.len());
+    bytes[start..].starts_with(b"<")
 }
 
 #[cfg(test)]

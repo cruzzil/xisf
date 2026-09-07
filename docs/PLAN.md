@@ -298,6 +298,30 @@ Still open:
   `Reader::set_url_resolver` hands the URL to the caller and takes bytes back,
   so policy, timeouts and TLS belong to whoever can actually decide them --
   and the workspace keeps its lack of an HTTP stack.
+- ~~Writing the ancillary elements~~ — done. The reader understood seven
+  elements the writer could not produce, which meant a read-modify-write
+  through this library dropped every one of them at the moment of saving.
+  `PendingImage` now carries them, and an image may own three blocks (pixels,
+  ICC profile, thumbnail) rather than one, so block positions are settled
+  before any element is emitted rather than accumulated while emitting.
+  libXISF reads the result, and the verifier now *requires* that it finds the
+  profile, thumbnail and keywords rather than merely parsing the file.
+- ~~Reading a `.xish` header file~~ — done. `Writer::to_distributed` produced
+  a header file that nothing in the library could open; `Reader::open` now
+  accepts both forms, told apart by content rather than by suffix, which is
+  unambiguous because an XML document cannot begin with the eight signature
+  bytes.
+- ~~`XISF:CreationTime`~~ — done. The spec makes it mandatory in `<Metadata>`
+  and it was never written. It comes from the clock by default, with
+  `Writer::with_creation_time` to pin it, since a timestamp otherwise makes
+  output non-reproducible. The date arithmetic is written out rather than
+  pulled in as a dependency every user would carry for one line of output.
+- ~~`offset` and `orientation` image attributes~~ — done, along with writing
+  `uuid`, which was read but never emitted. `offset` is a pedestal that
+  calibration subtracts, so an image read without it has the wrong zero point.
+  `orientation` is kept as a declaration rather than applied: the spec is
+  explicit that a decoder must not reorient pixels for processing that depends
+  on their physical layout.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

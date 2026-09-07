@@ -77,8 +77,10 @@ writer sharing a misunderstanding round-trip perfectly.
   embedded base64, attached blocks, byte-shuffled zlib and SHA-256.
 - **libXISF, both directions.** `tools/corpus-gen` writes a matrix of 40 files
   across five sample formats and seven codecs, all of which read back **byte
-  for byte**; and libXISF reads **51 of 51** files we write. It is GPL-3.0, so
-  it is used as a black box and never linked.
+  for byte**; and libXISF reads **52 of 52** files we write, one of which
+  carries every ancillary element, where the check is that libXISF *finds*
+  the ICC profile, thumbnail and FITS keywords rather than merely parsing the
+  file. It is GPL-3.0, so it is used as a black box and never linked.
 - **`seiza-xisf`**, a third implementation, as a pure-Rust dev-dependency that
   runs on every platform.
 

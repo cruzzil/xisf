@@ -111,7 +111,7 @@ jobs:
           LD_LIBRARY_PATH: /tmp/libxisf-build
         run: |
           cargo test -p xisf-core --test round_trip_libxisf -- --nocapture 2>&1 | tee out.txt
-          grep -q "libXISF read 51 of 51" out.txt \
+          grep -q "libXISF read 52 of 52" out.txt \
             || { echo "the round-trip did not run, or did not fully pass"; exit 1; }
 
       - name: Report a skipped oracle
@@ -124,6 +124,10 @@ jobs:
   # passed, so it runs over both crates.
   miri:
     runs-on: ubuntu-latest
+    # A Miri run that stops making progress otherwise sits for GitHub's
+    # six-hour default, which reads as "still going" rather than as a
+    # failure. Ten times the normal duration is enough headroom.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly

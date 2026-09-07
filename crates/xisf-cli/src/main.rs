@@ -141,6 +141,14 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 image.bounds().map_or(String::new(), |b| format!(", bounds {}:{}", b.low, b.high))
             );
 
+            if let Some(offset) = image.attributes().offset {
+                println!("       pedestal offset {offset}");
+            }
+            if let Some(orientation) = image.attributes().orientation
+                && !orientation.is_identity()
+            {
+                println!("       orientation {}", orientation.to_attribute());
+            }
             if let Some(resolution) = image.resolution() {
                 let (x, y) = resolution.per_inch();
                 println!(

@@ -20,11 +20,16 @@
  * shown nothing, and the two directions fail differently -- a reader that is
  * wrong about a field usually still round-trips through its own writer.
  *
- * Usage: verify <file.xisf> <expected-byte-count>
+ * Usage: verify <file.xisf> <expected-byte-count> [--ancillary]
  *
  * Reads the file with libXISF and prints the image geometry and data size it
  * sees.  Exits non-zero if libXISF refuses the file or disagrees about the
  * size, so a test can simply check the exit status.
+ *
+ * With --ancillary it additionally requires that libXISF found the ICC
+ * profile, thumbnail and FITS keywords we wrote.  Parsing a file is a weaker
+ * claim than reading what is in it: an element another implementation cannot
+ * see is, for that implementation, an element that is not there.
  */
 
 #include <cstdint>
@@ -41,6 +46,9 @@ int main(int argc, char **argv) {
     }
     const std::string path = argv[1];
     const long long expected = argc > 2 ? std::atoll(argv[2]) : -1;
+    bool ancillary = false;
+    for (int i = 2; i < argc; ++i)
+        if (std::string(argv[i]) == "--ancillary") ancillary = true;
 
     try {
         LibXISF::XISFReader reader;
@@ -63,6 +71,25 @@ int main(int argc, char **argv) {
             std::cerr << "  size mismatch: libXISF says " << size << ", expected " << expected
                       << "\n";
             return 1;
+        }
+
+        if (ancillary) {
+            if (image.iccProfile().size() == 0) {
+                std::cerr << "  libXISF found no ICC profile\n";
+                return 1;
+            }
+            if (image.fitsKeywords().empty()) {
+                std::cerr << "  libXISF found no FITS keywords\n";
+                return 1;
+            }
+            const LibXISF::Image &thumb = reader.getThumbnail();
+            if (thumb.width() == 0 || thumb.height() == 0) {
+                std::cerr << "  libXISF found no thumbnail\n";
+                return 1;
+            }
+            std::cout << "  ancillary: " << image.iccProfile().size() << "-byte ICC profile, "
+                      << image.fitsKeywords().size() << " FITS keyword(s), " << thumb.width()
+                      << "x" << thumb.height() << " thumbnail\n";
         }
     } catch (const std::exception &e) {
         std::cerr << path << ": libXISF refused the file: " << e.what() << "\n";

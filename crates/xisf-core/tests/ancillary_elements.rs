@@ -185,3 +185,51 @@ fn a_standalone_structure_keeps_its_uid() {
     assert_eq!(s.uid.as_deref(), Some("s"));
     assert_eq!(s.fields[0].kind.shape, xisf_core::property::Shape::String);
 }
+
+/// `offset` is a pedestal added to every sample. Dropping it gives an image
+/// the wrong zero point, which a calibration pipeline then propagates into
+/// every frame it touches -- so it is read, and it is validated.
+#[test]
+fn an_image_offset_is_read_and_bounded() {
+    let h = header(r#"<Image geometry="2:2:1" sampleFormat="UInt16" offset="512.5"/>"#);
+    let image = xisf_core::image::Image::parse(h.images()[0]).expect("parse");
+    assert_eq!(image.offset, Some(512.5));
+
+    // Absent means zero by the spec's default, but absent and zero are told
+    // apart so a writer can reproduce a file that said nothing.
+    let h = header(r#"<Image geometry="2:2:1" sampleFormat="UInt16"/>"#);
+    assert_eq!(xisf_core::image::Image::parse(h.images()[0]).expect("parse").offset, None);
+
+    // A pedestal is added, never subtracted, so a negative one is meaningless.
+    for bad in ["-1", "nonsense", "NaN"] {
+        let h =
+            header(&format!(r#"<Image geometry="2:2:1" sampleFormat="UInt16" offset="{bad}"/>"#));
+        assert!(xisf_core::image::Image::parse(h.images()[0]).is_err(), "accepted offset={bad}");
+    }
+}
+
+/// Every orientation the spec lists, round-tripped through its own spelling.
+#[test]
+fn every_orientation_the_spec_defines_round_trips() {
+    use xisf_core::image::Orientation;
+
+    for (text, rotation, flip) in [
+        ("0", 0, false),
+        ("flip", 0, true),
+        ("90", 90, false),
+        ("90;flip", 90, true),
+        ("-90", -90, false),
+        ("-90;flip", -90, true),
+        ("180", 180, false),
+        ("180;flip", 180, true),
+    ] {
+        let parsed = Orientation::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert_eq!((parsed.rotation, parsed.flip_horizontal), (rotation, flip), "{text}");
+        assert_eq!(parsed.to_attribute(), text, "{text} did not survive being written back");
+        assert_eq!(parsed.is_identity(), text == "0", "{text}");
+    }
+
+    for bad in ["45", "flop", "90;flop", "", "90;flip;flip"] {
+        assert!(Orientation::parse(bad).is_err(), "accepted orientation={bad:?}");
+    }
+}

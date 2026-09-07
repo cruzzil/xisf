@@ -15,14 +15,14 @@ fn sample_file(format: SampleFormat, channels: u64) -> Vec<u8> {
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     };
     let size = image.data_size().expect("size") as usize;
     let data: Vec<u8> = (0..size).map(|i| (i * 11 + 3) as u8).collect();
 
     let mut writer = Writer::new();
-    writer
-        .add_image(PendingImage { image, data, options: BlockOptions::default() })
-        .expect("add_image");
+    writer.add_image(PendingImage::new(image, data, BlockOptions::default())).expect("add_image");
     writer.to_bytes().expect("to_bytes")
 }
 
@@ -287,18 +287,20 @@ fn checksums_verify_through_the_c_api() {
         id: None,
         uuid: None,
         image_type: None,
+        offset: None,
+        orientation: None,
     };
     let data = vec![7u8; image.data_size().unwrap() as usize];
     let mut writer = Writer::new();
     writer
-        .add_image(PendingImage {
+        .add_image(PendingImage::new(
             image,
             data,
-            options: BlockOptions {
+            BlockOptions {
                 compression: None,
                 checksum: Some(xisf_core::block::ChecksumAlgorithm::Sha256),
             },
-        })
+        ))
         .unwrap();
     let bytes = writer.to_bytes().unwrap();
 

@@ -170,6 +170,15 @@ fn attachment_offsets_are_bounded_at_both_ends() {
     }
 }
 
+/// How wide the brute-force sweeps below go.
+///
+/// Miri interprets rather than executes, so a sweep of thousands of parses
+/// takes hours there rather than a second. It is narrowed rather than skipped:
+/// under Miri these tests exist to check the memory map and the unsafe code a
+/// parse touches, which a handful of inputs exercises just as well, while the
+/// breadth belongs to the ordinary test run on every platform.
+const SWEEP: usize = if cfg!(miri) { 24 } else { 600 };
+
 /// The whole corpus, truncated at every length, must never panic. A reader
 /// that indexes past the end on a short file is a crash in a decoder.
 #[test]
@@ -179,7 +188,7 @@ fn truncation_at_every_length_never_panics() {
 
     for sub in ["pixinsight", "generated"] {
         let Ok(entries) = std::fs::read_dir(corpus.join(sub)) else { continue };
-        for entry in entries.flatten().take(6) {
+        for entry in entries.flatten().take(if cfg!(miri) { 1 } else { 6 }) {
             let path = entry.path();
             if path.extension().is_none_or(|e| e != "xisf") {
                 continue;
@@ -190,11 +199,12 @@ fn truncation_at_every_length_never_panics() {
             // Every length up to the header, then a sample beyond it: the
             // interesting boundaries are all in the first few hundred bytes,
             // and the block offsets past them.
-            let dense = bytes.len().min(600);
+            let dense = bytes.len().min(SWEEP);
             for n in 0..dense {
                 exercise(&bytes[..n]);
             }
-            for n in (dense..bytes.len()).step_by(97) {
+            let stride = if cfg!(miri) { bytes.len().max(1) } else { 97 };
+            for n in (dense..bytes.len()).step_by(stride) {
                 exercise(&bytes[..n]);
             }
         }
@@ -212,7 +222,7 @@ fn single_byte_corruption_never_panics() {
         return;
     };
 
-    for i in 0..original.len().min(1500) {
+    for i in 0..original.len().min(SWEEP * 2) {
         let mut bytes = original.clone();
         bytes[i] ^= 0xff;
         exercise(&bytes);
