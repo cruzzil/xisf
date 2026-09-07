@@ -318,3 +318,43 @@ fn image_attributes_survive_a_round_trip() {
     assert_eq!(read.id, source.id);
     assert_eq!(read.image_type, source.image_type);
 }
+
+/// The specification defines two pixel storage models and requires a
+/// conforming decoder to read both. They are indistinguishable once the
+/// samples are in a `Vec`, so a caller who reads an interleaved file without
+/// checking gets its colour channels shuffled and no sign that it happened.
+#[test]
+fn interleaved_images_can_be_read_in_planar_order() {
+    // Three 2x2 channels whose values say which channel they came from.
+    let planar: Vec<u8> = vec![10, 11, 12, 13, 20, 21, 22, 23, 30, 31, 32, 33];
+    let interleaved: Vec<u8> = vec![10, 20, 30, 11, 21, 31, 12, 22, 32, 13, 23, 33];
+
+    let mut normal = image(2, 2, SampleFormat::UInt8, ColorSpace::Rgb);
+    normal.pixel_storage = xisf::PixelStorage::Normal;
+
+    let mut writer = Writer::new();
+    writer
+        .add_image(PendingImage::new(normal, interleaved.clone(), BlockOptions::default()))
+        .expect("add_image");
+    writer
+        .add_image(PendingImage::new(
+            image(2, 2, SampleFormat::UInt8, ColorSpace::Rgb),
+            planar.clone(),
+            BlockOptions::default(),
+        ))
+        .expect("add_image");
+
+    let file = XisfFile::from_bytes(writer.to_bytes().expect("write")).expect("read back");
+
+    let stored = &file.images()[0];
+    assert_eq!(stored.pixel_storage(), xisf::PixelStorage::Normal);
+    // `read` gives the samples as the file holds them...
+    assert_eq!(stored.read::<u8>().expect("read"), interleaved);
+    // ...and `read_planar` gives the same image channel by channel.
+    assert_eq!(stored.read_planar::<u8>().expect("planar"), planar);
+
+    // A planar file is unchanged by the same call.
+    let already = &file.images()[1];
+    assert_eq!(already.read_planar::<u8>().expect("planar"), planar);
+    assert_eq!(already.read::<u8>().expect("read"), planar);
+}

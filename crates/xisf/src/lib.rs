@@ -37,7 +37,7 @@ pub use xisf_core::image::{
     Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, Orientation,
     PixelStorage, Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,
 };
-pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
+pub use xisf_core::property::{Property, PropertyType, Scalar, ScalarValue, Shape};
 pub use xisf_core::table::{Cell, Field, Structure, Table};
 pub use xisf_core::writer::{
     BlockOptions, Codec2 as WriteCodec, CompressionRequest, DistributedUnit, FitsKeyword,
@@ -263,6 +263,42 @@ impl<'a> ImageRef<'a> {
         Ok(T::decode(&bytes, self.byte_order()))
     }
 
+    /// The image's samples, always channel by channel.
+    ///
+    /// [`ImageRef::read`] returns the samples as the file stores them, which
+    /// is planar for most files and interleaved for the rest. The
+    /// specification requires a conforming decoder to read both, and the two
+    /// are indistinguishable once the samples are in a `Vec` -- so a caller
+    /// who forgets to check [`ImageRef::pixel_storage`] gets an image with
+    /// its colour channels shuffled and no indication that anything happened.
+    ///
+    /// This returns planar order whatever the file used, which is the layout
+    /// most image code expects. For a planar file it is exactly
+    /// [`ImageRef::read`] and costs nothing extra.
+    pub fn read_planar<T: Sample>(&self) -> Result<Vec<T>> {
+        let samples = self.read::<T>()?;
+        if self.image.pixel_storage == PixelStorage::Planar {
+            return Ok(samples);
+        }
+
+        let channels = self.image.channels as usize;
+        if channels <= 1 {
+            return Ok(samples);
+        }
+        let pixels = samples.len() / channels;
+
+        // Interleaved to planar: pixel `p`'s channel `c` sits at `p * n + c`
+        // as stored and belongs at `c * pixels + p`.
+        let mut out = Vec::with_capacity(samples.len());
+        for c in 0..channels {
+            out.extend((0..pixels).map(|p| samples[p * channels + c]));
+        }
+        // Any remainder past the last whole pixel is carried over, so this
+        // cannot silently shorten an image whose length does not divide.
+        out.extend_from_slice(&samples[pixels * channels..]);
+        Ok(out)
+    }
+
     /// Where the image's data lives, for callers that care.
     pub fn location(&self) -> Option<&Location> {
         self.element.data.location.as_ref()
@@ -401,6 +437,18 @@ impl<'a> PropertyRef<'a> {
     }
 
     /// The value as text, for a scalar, string or `TimePoint`.
+    ///
+    /// The property's value, decoded according to its declared type.
+    ///
+    /// Prefer this to parsing [`PropertyRef::as_str`] yourself: the format
+    /// permits binary, octal and hexadecimal integer literals, which Rust's
+    /// own `parse` rejects, and the declared type decides whether a literal
+    /// that fills its width is a large positive number or a negative one.
+    pub fn value(&self) -> Option<ScalarValue> {
+        self.property.value()
+    }
+
+    /// The property's value as it is written in the header.
     ///
     /// `None` for a vector, matrix or table, whose value is binary and has no
     /// textual form -- use [`bytes`](PropertyRef::bytes) or

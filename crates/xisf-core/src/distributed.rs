@@ -128,6 +128,15 @@ pub fn parse_blocks_file(bytes: &[u8]) -> Result<BlocksIndex> {
         return Err(err!(BadHeader, "the reserved field must be zero"));
     }
 
+    // Nodes may not repeat a position, but nothing stops them overlapping,
+    // so a node's declared elements can be counted again by the next node
+    // sixteen bytes along. Bounding each node against the end of the file is
+    // therefore not enough: a hundred thousand overlapping nodes multiply
+    // into an index far larger than the file describing it. Every element
+    // occupies forty bytes on disk, so no honest file can describe more
+    // blocks than it has room for, and that is the bound.
+    let max_elements = bytes.len() / IndexElement::SIZE;
+
     let mut elements = Vec::new();
     let mut seen: Vec<u64> = Vec::new();
     let mut position = BLOCKS_PREAMBLE_LEN as u64;
@@ -172,9 +181,129 @@ pub fn parse_blocks_file(bytes: &[u8]) -> Result<BlocksIndex> {
             ));
         }
 
+        if elements.len() + count > max_elements {
+            return Err(err!(
+                BadHeader,
+                "the block index declares more than {max_elements} elements, \
+                 which is more than a file of {} bytes can hold",
+                bytes.len()
+            ));
+        }
         for i in 0..count {
             let at = header_end + i * IndexElement::SIZE;
             elements.push(IndexElement::parse(&bytes[at..at + IndexElement::SIZE]));
+        }
+        position = next;
+    }
+
+    Err(err!(BadHeader, "the block index has more than {MAX_NODES} nodes"))
+}
+
+/// Read one block out of a data blocks file, without reading the whole file.
+///
+/// A distributed unit exists so that bulk data lives outside the header, and
+/// such a file can be far larger than the block wanted from it. Reading it
+/// whole to take one image out of it defeats the arrangement, and turns a
+/// two-hundred-byte header into a demand for however many gigabytes happen to
+/// sit beside it. The index is walked by seeking, and only the block itself
+/// is read.
+pub fn read_block_from<R: std::io::Read + std::io::Seek>(
+    source: &mut R,
+    file_len: u64,
+    id: u64,
+) -> Result<Option<Vec<u8>>> {
+    use std::io::SeekFrom;
+
+    let mut preamble = [0u8; BLOCKS_PREAMBLE_LEN];
+    source.seek(SeekFrom::Start(0))?;
+    source.read_exact(&mut preamble).map_err(|_| {
+        err!(Truncated, "a data blocks file needs at least {BLOCKS_PREAMBLE_LEN} bytes")
+    })?;
+    if &preamble[..8] != BLOCKS_SIGNATURE {
+        return Err(err!(NotXisf, "not a data blocks file"));
+    }
+    if preamble[8..16] != [0; 8] {
+        return Err(err!(BadHeader, "the reserved field must be zero"));
+    }
+
+    // The same bounds as the in-memory walk, for the same reasons: a cycle
+    // loops forever, and overlapping nodes multiply into an index larger than
+    // the file describing it.
+    let max_elements = file_len / IndexElement::SIZE as u64;
+    let mut counted = 0u64;
+    let mut seen: Vec<u64> = Vec::new();
+    let mut position = BLOCKS_PREAMBLE_LEN as u64;
+
+    for _ in 0..MAX_NODES {
+        if position == 0 {
+            return Ok(None);
+        }
+        if seen.contains(&position) {
+            return Err(err!(BadHeader, "the block index loops back to position {position}"));
+        }
+        seen.push(position);
+
+        if position.checked_add(16).is_none_or(|end| end > file_len) {
+            return Err(err!(Truncated, "an index node at {position} runs past the end"));
+        }
+        let mut node = [0u8; 16];
+        source.seek(SeekFrom::Start(position))?;
+        source.read_exact(&mut node)?;
+
+        let count = u32::from_le_bytes(node[..4].try_into().expect("4 bytes")) as u64;
+        if node[4..8] != [0; 4] {
+            return Err(err!(BadHeader, "an index node's reserved field is not zero"));
+        }
+        let next = u64::from_le_bytes(node[8..16].try_into().expect("8 bytes"));
+
+        let elements_end = count
+            .checked_mul(IndexElement::SIZE as u64)
+            .and_then(|n| n.checked_add(position + 16))
+            .ok_or_else(|| err!(Truncated, "an index node declares too many elements"))?;
+        if elements_end > file_len {
+            return Err(err!(
+                Truncated,
+                "an index node at {position} declares {count} elements, which run past the end"
+            ));
+        }
+        counted += count;
+        if counted > max_elements {
+            return Err(err!(
+                BadHeader,
+                "the block index declares more than {max_elements} elements, \
+                 which is more than a file of {file_len} bytes can hold"
+            ));
+        }
+
+        // Elements are read a node at a time rather than all at once, so a
+        // large index costs one node's worth of memory rather than all of it.
+        let mut buffer = vec![0u8; IndexElement::SIZE];
+        for i in 0..count {
+            source.seek(SeekFrom::Start(position + 16 + i * IndexElement::SIZE as u64))?;
+            source.read_exact(&mut buffer)?;
+            let element = IndexElement::parse(&buffer);
+            if element.id != id || element.is_free() {
+                continue;
+            }
+
+            let end = element
+                .position
+                .checked_add(element.length)
+                .ok_or_else(|| err!(Truncated, "block {id}'s position and length overflow"))?;
+            if end > file_len {
+                return Err(err!(
+                    Truncated,
+                    "block {id} runs {} bytes past the end of the file",
+                    end - file_len
+                ));
+            }
+            let length = usize::try_from(element.length)
+                .map_err(|_| err!(Unsupported, "block {id} is too large for this platform"))?;
+
+            let mut data = vec![0u8; length];
+            source.seek(SeekFrom::Start(element.position))?;
+            source.read_exact(&mut data)?;
+            return Ok(Some(data));
         }
         position = next;
     }

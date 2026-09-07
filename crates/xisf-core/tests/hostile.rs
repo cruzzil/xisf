@@ -240,3 +240,212 @@ fn exercise(bytes: &[u8]) {
         let _ = xisf_core::property::Property::parse(element);
     }
 }
+
+/// Deeply nested XML must be refused rather than crashing the process.
+///
+/// A stack overflow in Rust aborts: it is not a panic and cannot be caught,
+/// so a library that overflows on a hostile file takes the whole process with
+/// it, including every unrelated request it was serving. The tree is built by
+/// the parser but walked, cloned, compared and *dropped* recursively, so the
+/// depth has to be bounded when it is read rather than at each use.
+///
+/// 300,000 elements is 2MB of XML -- nothing, as uploads go.
+#[test]
+fn deeply_nested_xml_is_refused_rather_than_overflowing_the_stack() {
+    let depth = 300_000;
+    let mut xml = String::from(r#"<xisf version="1.0">"#);
+    for _ in 0..depth {
+        xml.push_str("<a>");
+    }
+    for _ in 0..depth {
+        xml.push_str("</a>");
+    }
+    xml.push_str("</xisf>");
+
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let err = Reader::from_bytes(bytes).expect_err("a 300,000-deep header was accepted");
+    assert_eq!(err.kind(), ErrorKind::BadHeader);
+    assert!(err.message().contains("nested"), "{}", err.message());
+}
+
+/// A header that is mostly elements turns a small file into a large tree.
+/// The cap is on what the parser will build, not on what the caller asks for
+/// afterwards, because by then the memory is already committed.
+#[test]
+fn an_absurd_number_of_elements_is_refused() {
+    let mut xml = String::from(r#"<xisf version="1.0">"#);
+    for _ in 0..2_000_000 {
+        xml.push_str("<a/>");
+    }
+    xml.push_str("</xisf>");
+
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let err = Reader::from_bytes(bytes).expect_err("two million elements were accepted");
+    assert_eq!(err.kind(), ErrorKind::BadHeader);
+    assert!(err.message().contains("elements"), "{}", err.message());
+}
+
+/// The limits must not be so tight that they reject real files. Every file in
+/// the corpus, including PixInsight's own, has to keep opening.
+#[test]
+fn the_structural_limits_do_not_reject_real_files() {
+    let corpus = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../corpus");
+    let mut opened = 0;
+    for sub in ["pixinsight", "generated"] {
+        let Ok(entries) = std::fs::read_dir(corpus.join(sub)) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|e| e != "xisf") {
+                continue;
+            }
+            Reader::open(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            opened += 1;
+        }
+    }
+    assert!(opened > 0, "no corpus file was opened");
+}
+
+/// A file that records a checksum is telling the reader how to know whether
+/// the bytes are the bytes that were written. Handing them over without
+/// looking is a silent corruption the format went out of its way to make
+/// detectable, so the check is on unless a caller turns it off.
+#[cfg(feature = "checksums")]
+#[test]
+fn a_block_that_fails_its_own_checksum_is_refused_by_default() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../corpus/pixinsight/Sample_F32_ZlibCompression_Sha256Security.xisf");
+    let Ok(original) = std::fs::read(&path) else {
+        eprintln!("skipping: corpus file missing");
+        return;
+    };
+
+    // Locate the image block from the header rather than guessing, then flip
+    // a byte inside it: the checksum covers the block as stored.
+    let reader = Reader::from_bytes(original.clone()).expect("open");
+    let data = reader.header().images()[0].data.clone();
+    assert!(data.checksum.is_some(), "this corpus file should record a checksum");
+    let Some(xisf_core::block::Location::Attachment { position, .. }) = data.location else {
+        panic!("expected an attached block");
+    };
+
+    let mut corrupted = original.clone();
+    corrupted[position as usize] ^= 0x01;
+
+    let reader = Reader::from_bytes(corrupted).expect("the header is still intact");
+    let data = reader.header().images()[0].data.clone();
+
+    // `stored_block`, not `block`: the checksum covers the block as stored,
+    // so this is checkable without a codec feature being compiled in.
+    let err = reader.stored_block(&data).expect_err("a corrupted block was handed over");
+    assert_eq!(err.kind(), ErrorKind::ChecksumMismatch);
+
+    // `verify` still reports rather than fails, which is what makes it useful
+    // for telling "corrupt" apart from "unreadable".
+    assert_eq!(reader.verify(&data).expect("verify"), xisf_core::ChecksumStatus::Invalid);
+
+    // And a caller who wants the bytes anyway can still have them.
+    let mut lenient = Reader::from_bytes(original).expect("open");
+    lenient.set_verify_checksums(false);
+    let data = lenient.header().images()[0].data.clone();
+    assert!(lenient.stored_block(&data).is_ok(), "the intact file should read either way");
+}
+
+/// The block index is a linked list of nodes, each declaring how many index
+/// elements follow it. Cycles are caught and the node count is bounded, but
+/// nothing stopped the nodes from *overlapping*: a hundred thousand distinct
+/// positions, each declaring a whole file's worth of elements, is a small
+/// file that asks for hundreds of gigabytes of index.
+///
+/// Both ways in are covered. A local `path(...)` block seeks through the
+/// index and holds one element at a time, so it cannot accumulate at all; a
+/// `url(...)` block arrives as bytes a resolver already fetched, and that
+/// path builds the whole index, so it is bounded by what the file could
+/// honestly describe.
+#[test]
+fn overlapping_index_nodes_cannot_multiply_into_a_memory_bomb() {
+    const SIZE: usize = 64 * 1024;
+    let mut blocks = vec![0u8; SIZE];
+    blocks[..8].copy_from_slice(b"XISB0100");
+
+    // As many nodes as fit, sixteen bytes apart, each declaring as many
+    // elements as still fit in the file from where it sits -- so every node
+    // is individually well formed and within bounds. The element data they
+    // point at overlaps the following nodes, which nothing forbids.
+    let mut declared = 0u64;
+    let mut position = 16usize;
+    while position + 32 <= SIZE {
+        let next = position + 16;
+        let count = ((SIZE - position - 16) / 40) as u32;
+        blocks[position..position + 4].copy_from_slice(&count.to_le_bytes());
+        blocks[position + 4..position + 8].copy_from_slice(&[0; 4]);
+        blocks[position + 8..position + 16].copy_from_slice(&(next as u64).to_le_bytes());
+        declared += u64::from(count);
+        position = next;
+    }
+    assert!(declared > 1_000_000, "the construction should declare millions: {declared}");
+
+    // A 64KB file can describe at most 1,638 blocks, since each costs forty
+    // bytes on disk. It claims over a million.
+    let err = xisf_core::distributed::parse_blocks_file(&blocks)
+        .expect_err("an index declaring millions of elements was built in full");
+    assert!(err.message().contains("elements"), "{}", err.message());
+
+    // The seeking path walks the same file without accumulating, so it
+    // finishes rather than exhausting memory, whatever it concludes.
+    let scratch = Scratch::new("index-bomb");
+    std::fs::write(scratch.join("data.xisb"), &blocks).unwrap();
+    let path = unit_with(&scratch, "unit.xisf", "path(data.xisb):0x1");
+    let _ = block_of(&path);
+}
+
+/// The same treatment the monolithic path gets, for data blocks files.
+///
+/// A blocks file is parsed with far more arithmetic than a header is --
+/// positions, lengths and a linked list, all read from the file -- and it
+/// arrives from wherever the header pointed, so it is no more trustworthy.
+/// Both routes into it are swept: the slice parser a `url(...)` block uses,
+/// and the seeking reader a `path(...)` block uses.
+#[test]
+fn a_corrupt_blocks_file_never_panics() {
+    let blocks: Vec<(u64, Vec<u8>)> =
+        vec![(1, vec![0xAA; 64]), (7, vec![0xBB; 200]), (9, Vec::new())];
+    let original = xisf_core::distributed::write_blocks_file(&blocks).expect("write");
+
+    let scratch = Scratch::new("blocks-fuzz");
+    let probe = |bytes: &[u8]| {
+        let _ = xisf_core::distributed::parse_blocks_file(bytes);
+
+        // And through the reader, which seeks rather than parsing in full.
+        std::fs::write(scratch.join("data.xisb"), bytes).unwrap();
+        for locator in ["path(data.xisb):0x1", "path(data.xisb):0x7", "path(data.xisb):0x9"] {
+            let path = unit_with(&scratch, "unit.xisf", locator);
+            let _ = block_of(&path);
+        }
+    };
+
+    for n in 0..original.len() {
+        probe(&original[..n]);
+    }
+    for i in 0..original.len() {
+        let mut bytes = original.clone();
+        bytes[i] ^= 0xff;
+        probe(&bytes);
+    }
+    // Every byte of the first index node set to each extreme, since that is
+    // where the counts and pointers live.
+    for i in 16..original.len().min(96) {
+        for value in [0x00, 0x01, 0x7f, 0x80, 0xff] {
+            let mut bytes = original.clone();
+            bytes[i] = value;
+            probe(&bytes);
+        }
+    }
+}

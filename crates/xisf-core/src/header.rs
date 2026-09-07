@@ -58,10 +58,18 @@ impl Element {
     }
 
     /// Every element in this subtree, this one first.
+    ///
+    /// Walked with an explicit worklist rather than by recursion. The depth
+    /// is bounded when the header is parsed, so recursion would be safe, but
+    /// a walk that cannot overflow whatever it is handed is one less thing
+    /// depending on a limit set somewhere else.
     pub fn descendants(&self) -> Vec<&Element> {
-        let mut out = vec![self];
-        for child in &self.children {
-            out.extend(child.descendants());
+        let mut out = Vec::new();
+        let mut pending = vec![self];
+        while let Some(element) = pending.pop() {
+            out.push(element);
+            // Reversed, so children come back out in document order.
+            pending.extend(element.children.iter().rev());
         }
         out
     }
@@ -117,6 +125,25 @@ impl Header {
 }
 
 /// Parse the header's XML text.
+/// How deeply a header may nest before it is refused.
+///
+/// A real header nests four deep at most: `xisf > Table > Row > Cell`. The
+/// tree is built iteratively, but it is walked, cloned, compared and *dropped*
+/// by recursion, and a stack overflow in Rust aborts the process rather than
+/// unwinding -- so an unbounded depth is a way for one hostile file to kill
+/// whatever else the process was doing. The limit is far above anything a
+/// real file uses and far below where any of those operations is at risk.
+const MAX_DEPTH: usize = 256;
+
+/// How many elements a header may contain before it is refused.
+///
+/// Each element costs far more in memory than the few bytes of XML that
+/// declare it, so a header that is mostly `<a/>` expands by a large factor.
+/// The header length field is 32 bits, which puts four gigabytes of such
+/// declarations within the format's own rules; this bounds what that can turn
+/// into. PixInsight's own files run to a few hundred elements.
+const MAX_ELEMENTS: usize = 1_000_000;
+
 pub fn parse(xml: &str) -> Result<Header> {
     let mut reader = Reader::from_str(xml);
     let config = reader.config_mut();
@@ -126,6 +153,7 @@ pub fn parse(xml: &str) -> Result<Header> {
     // A stack of elements under construction; the last is the current one.
     let mut stack: Vec<Element> = Vec::new();
     let mut root: Option<Element> = None;
+    let mut elements = 0usize;
 
     loop {
         match reader.read_event() {
@@ -134,8 +162,18 @@ pub fn parse(xml: &str) -> Result<Header> {
             }
             Ok(Event::Eof) => break,
 
-            Ok(Event::Start(start)) => stack.push(element_from(&start)?),
+            Ok(Event::Start(start)) => {
+                count(&mut elements)?;
+                if stack.len() >= MAX_DEPTH {
+                    return Err(err!(
+                        BadHeader,
+                        "the header is nested more than {MAX_DEPTH} elements deep"
+                    ));
+                }
+                stack.push(element_from(&start)?);
+            }
             Ok(Event::Empty(start)) => {
+                count(&mut elements)?;
                 let element = element_from(&start)?;
                 finish(element, &mut stack, &mut root)?;
             }
@@ -233,6 +271,15 @@ fn push_text(stack: &mut [Element], text: &str) {
 }
 
 /// Attach a finished element to its parent, or record it as the root.
+/// Count one element, refusing a header that declares absurdly many.
+fn count(elements: &mut usize) -> Result<()> {
+    *elements += 1;
+    if *elements > MAX_ELEMENTS {
+        return Err(err!(BadHeader, "the header declares more than {MAX_ELEMENTS} elements"));
+    }
+    Ok(())
+}
+
 fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -> Result<()> {
     match stack.last_mut() {
         Some(parent) => {

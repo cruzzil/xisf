@@ -524,3 +524,133 @@ mod tests {
         }
     }
 }
+
+/// A scalar property's value, decoded according to its declared type.
+///
+/// Kept as an enum rather than one number because the declared type decides
+/// how the text is read: the specification's own example, `0x80E950AB`, is
+/// 2162774187 as a `UInt32` and -2132193109 as an `Int32`, and nothing but
+/// the `type` attribute says which was meant.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ScalarValue {
+    Bool(bool),
+    Signed(i128),
+    Unsigned(u128),
+    Float(f64),
+    /// Real and imaginary parts.
+    Complex(f64, f64),
+}
+
+impl ScalarValue {
+    /// The value as an `f64`, for callers that want one number.
+    ///
+    /// Large 64- and 128-bit integers lose precision, as they would in any
+    /// conversion to a double; a complex value yields its real part.
+    pub fn as_f64(&self) -> f64 {
+        match *self {
+            ScalarValue::Bool(b) => f64::from(u8::from(b)),
+            ScalarValue::Signed(v) => v as f64,
+            ScalarValue::Unsigned(v) => v as f64,
+            ScalarValue::Float(v) => v,
+            ScalarValue::Complex(re, _) => re,
+        }
+    }
+}
+
+/// Parse an integer the way the specification serialises one.
+///
+/// Decimal is the ordinary case, but binary, octal and hexadecimal are all
+/// legal with `0b`, `0o` and `0x` prefixes in either case -- and Rust's own
+/// `from_str` rejects every one of those, so a caller who reached for
+/// `.parse()` would fail on values this format explicitly permits.
+///
+/// The result is the bit pattern the digits denote. Whether it is read as
+/// signed or unsigned is the declared type's business, not the literal's:
+/// `0x80E950AB` denotes the same thirty-two bits either way.
+fn parse_radix(text: &str) -> Option<(u128, bool)> {
+    let text = text.trim();
+    let (negative, digits) = match text.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, text.strip_prefix('+').unwrap_or(text)),
+    };
+
+    let (radix, digits) = match digits.get(..2) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("0b") => (2, &digits[2..]),
+        Some(prefix) if prefix.eq_ignore_ascii_case("0o") => (8, &digits[2..]),
+        Some(prefix) if prefix.eq_ignore_ascii_case("0x") => (16, &digits[2..]),
+        _ => (10, digits),
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    u128::from_str_radix(digits, radix).ok().map(|value| (value, negative))
+}
+
+/// Parse a floating point value the way the specification serialises one.
+///
+/// `NaN`, `+Inf` and `-Inf` are the spelled-out forms the spec names, and a
+/// leading decimal point (`.123`) is legal. Rust's parser accepts all of
+/// these, so this exists to be the one place the grammar is stated rather
+/// than to correct it.
+fn parse_float(text: &str) -> Option<f64> {
+    text.trim().parse::<f64>().ok()
+}
+
+impl Property {
+    /// The property's value, decoded according to its declared type.
+    ///
+    /// `None` when the property has no scalar value in the header -- a
+    /// string, a time point, or an aggregate whose value lives in a data
+    /// block -- or when the text does not match the type it claims.
+    pub fn value(&self) -> Option<ScalarValue> {
+        if self.kind.shape != Shape::Scalar {
+            return None;
+        }
+        let text = self.value.as_deref()?.trim();
+        let scalar = self.kind.element?;
+
+        Some(match scalar {
+            // The spec allows either the words or the integers 0 and 1.
+            Scalar::Boolean => match text {
+                "true" | "True" | "TRUE" | "1" => ScalarValue::Bool(true),
+                "false" | "False" | "FALSE" | "0" => ScalarValue::Bool(false),
+                _ => return None,
+            },
+
+            Scalar::Float32 | Scalar::Float64 | Scalar::Float128 => {
+                ScalarValue::Float(parse_float(text)?)
+            }
+
+            Scalar::Complex32 | Scalar::Complex64 | Scalar::Complex128 => {
+                // `(re,im)`, as the spec's `(0.123,-0.735e-02)` example.
+                let inner = text.strip_prefix('(')?.strip_suffix(')')?;
+                let (re, im) = inner.split_once(',')?;
+                ScalarValue::Complex(parse_float(re)?, parse_float(im)?)
+            }
+
+            Scalar::Int8 | Scalar::Int16 | Scalar::Int32 | Scalar::Int64 | Scalar::Int128 => {
+                let (magnitude, negative) = parse_radix(text)?;
+                let width = scalar.size()? * 8;
+                let signed = if negative {
+                    i128::try_from(magnitude).ok()?.checked_neg()?
+                } else if width < 128 && magnitude >= (1u128 << (width - 1)) {
+                    // A literal that fills the width, like the spec's own
+                    // `0x80E950AB` as an Int32, denotes a negative number in
+                    // two's complement rather than being out of range.
+                    (magnitude as i128) - (1i128 << width)
+                } else {
+                    i128::try_from(magnitude).ok()?
+                };
+                ScalarValue::Signed(signed)
+            }
+
+            Scalar::UInt8 | Scalar::UInt16 | Scalar::UInt32 | Scalar::UInt64 | Scalar::UInt128 => {
+                let (magnitude, negative) = parse_radix(text)?;
+                if negative {
+                    return None;
+                }
+                ScalarValue::Unsigned(magnitude)
+            }
+        })
+    }
+}

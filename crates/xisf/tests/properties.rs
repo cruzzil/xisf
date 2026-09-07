@@ -196,3 +196,91 @@ fn properties_are_collected_from_anywhere_in_the_header() {
     assert!(ids.contains(&"unit".to_string()), "{ids:?}");
     assert!(ids.contains(&"standalone".to_string()), "{ids:?}");
 }
+
+/// The format permits integers in binary, octal and hexadecimal, which Rust's
+/// own `parse` rejects outright -- so a caller who reached for `.parse()` on
+/// `as_str` would fail on values the specification explicitly allows. The
+/// fixtures are the spec's own examples, including its worked conversions.
+#[test]
+fn integer_properties_decode_in_every_radix_the_spec_allows() {
+    use xisf::ScalarValue;
+
+    let bytes = file_with(
+        r#"<Metadata>
+        <Property id="bin" type="UInt32" value="0b10100111100101"/>
+        <Property id="oct" type="UInt32" value="0o570261"/>
+        <Property id="hexU" type="UInt32" value="0x80E950AB"/>
+        <Property id="hexI" type="Int32" value="0x80E950AB"/>
+        <Property id="dec" type="Int32" value="-42"/>
+        <Property id="upper" type="UInt32" value="0XFF"/>
+        <Property id="neg" type="UInt32" value="-1"/>
+        <Property id="junk" type="UInt32" value="0xZZ"/>
+        </Metadata>"#,
+        &[],
+    );
+    let file = XisfFile::from_bytes(bytes).expect("read");
+    let value = |id: &str| file.property(id).unwrap_or_else(|| panic!("{id}")).value();
+
+    // The spec's own worked examples: 0b10100111100101 is 10725, 0o570261 is
+    // 192689, and 0x80E950AB is 2162774187 unsigned but -2132193109 signed.
+    assert_eq!(value("bin"), Some(ScalarValue::Unsigned(10725)));
+    assert_eq!(value("oct"), Some(ScalarValue::Unsigned(192689)));
+    assert_eq!(value("hexU"), Some(ScalarValue::Unsigned(2_162_774_187)));
+    assert_eq!(value("hexI"), Some(ScalarValue::Signed(-2_132_193_109)));
+    assert_eq!(value("dec"), Some(ScalarValue::Signed(-42)));
+    assert_eq!(value("upper"), Some(ScalarValue::Unsigned(255)));
+
+    // A negative literal for an unsigned type, and digits that are not
+    // digits in the declared base, are refused rather than guessed at.
+    assert_eq!(value("neg"), None);
+    assert_eq!(value("junk"), None);
+}
+
+/// Floats carry the spelled-out non-numeric values, and booleans may be
+/// written as words or as 0 and 1 -- both spellings are legal, and a decoder
+/// that only understood one would read half the files.
+#[test]
+fn float_and_boolean_properties_decode_in_every_spelling() {
+    use xisf::ScalarValue;
+
+    let bytes = file_with(
+        r#"<Metadata>
+        <Property id="a" type="Float64" value=".123"/>
+        <Property id="b" type="Float32" value="-123.456"/>
+        <Property id="nan" type="Float64" value="NaN"/>
+        <Property id="pinf" type="Float64" value="+Inf"/>
+        <Property id="ninf" type="Float64" value="-Inf"/>
+        <Property id="t1" type="Boolean" value="true"/>
+        <Property id="t2" type="Boolean" value="1"/>
+        <Property id="f1" type="Boolean" value="false"/>
+        <Property id="f2" type="Boolean" value="0"/>
+        <Property id="z" type="Complex32" value="(0.123,-0.735e-02)"/>
+        </Metadata>"#,
+        &[],
+    );
+    let file = XisfFile::from_bytes(bytes).expect("read");
+    let value = |id: &str| file.property(id).unwrap_or_else(|| panic!("{id}")).value();
+
+    assert_eq!(value("a"), Some(ScalarValue::Float(0.123)));
+    assert_eq!(value("b"), Some(ScalarValue::Float(-123.456)));
+    assert!(matches!(value("nan"), Some(ScalarValue::Float(v)) if v.is_nan()));
+    assert_eq!(value("pinf"), Some(ScalarValue::Float(f64::INFINITY)));
+    assert_eq!(value("ninf"), Some(ScalarValue::Float(f64::NEG_INFINITY)));
+
+    assert_eq!(value("t1"), Some(ScalarValue::Bool(true)));
+    assert_eq!(value("t2"), Some(ScalarValue::Bool(true)));
+    assert_eq!(value("f1"), Some(ScalarValue::Bool(false)));
+    assert_eq!(value("f2"), Some(ScalarValue::Bool(false)));
+
+    // The spec's own complex example.
+    assert_eq!(value("z"), Some(ScalarValue::Complex(0.123, -0.00735)));
+
+    // A vector has no scalar value, however it is asked for.
+    let bytes = file_with(
+        r#"<Metadata><Property id="v" type="F64Vector" length="1"
+           location="inline:base64">AAAAAAAAAAA=</Property></Metadata>"#,
+        &[],
+    );
+    let file = XisfFile::from_bytes(bytes).expect("read");
+    assert_eq!(file.property("v").expect("v").value(), None);
+}

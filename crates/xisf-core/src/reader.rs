@@ -73,6 +73,8 @@ pub struct Reader {
     allow_absolute_paths: bool,
     /// See [`Reader::set_url_resolver`].
     url_resolver: Option<UrlResolver>,
+    /// See [`Reader::set_verify_checksums`]. On unless a caller turns it off.
+    verify_checksums: bool,
     /// Where the file came from, so a `path:` block can be resolved relative
     /// to it, as the spec requires.
     path: Option<PathBuf>,
@@ -94,6 +96,18 @@ impl Reader {
     ///
     /// The file is memory-mapped, so an attached block costs nothing until it
     /// is read.
+    ///
+    /// # Mapped files and concurrent modification
+    ///
+    /// Because the file stays mapped for as long as the reader lives, another
+    /// process that *truncates* it out from under us turns a later block read
+    /// into `SIGBUS`, which no amount of checking in this crate can catch:
+    /// the bytes were valid when they were checked and stopped existing
+    /// afterwards. This is inherent to memory mapping rather than specific to
+    /// this crate, and it is the reason [`Reader::from_bytes`] exists -- a
+    /// caller reading files that others may be rewriting should read the
+    /// bytes themselves and hand them over, which costs a copy and removes
+    /// the hazard entirely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
@@ -111,6 +125,7 @@ impl Reader {
                 header,
                 path: Some(path.into()),
                 allow_absolute_paths: false,
+                verify_checksums: true,
                 url_resolver: None,
             });
         }
@@ -132,6 +147,7 @@ impl Reader {
                 header,
                 path: Some(path.into()),
                 allow_absolute_paths: false,
+                verify_checksums: true,
                 url_resolver: None,
             })
         }
@@ -146,6 +162,7 @@ impl Reader {
             header,
             path: None,
             allow_absolute_paths: false,
+            verify_checksums: true,
             url_resolver: None,
         })
     }
@@ -173,6 +190,31 @@ impl Reader {
     /// An attached block is borrowed straight from the mapping; a text-encoded
     /// one has to be decoded, so it is owned.
     pub fn stored_block(&self, data: &DataRef) -> Result<Cow<'_, [u8]>> {
+        let stored = self.stored_block_unchecked(data)?;
+
+        // A file that records a checksum is telling the reader how to know
+        // whether these bytes are the bytes that were written. Handing them
+        // over without looking, when the file itself said how to check, is a
+        // silent corruption the format went out of its way to make
+        // detectable -- so the check is on unless a caller turns it off.
+        if self.verify_checksums
+            && let Some(checksum) = &data.checksum
+            && digest(&stored, checksum.algorithm)? != checksum.digest
+        {
+            return Err(err!(
+                ChecksumMismatch,
+                "the block's {} checksum does not match its contents",
+                checksum.algorithm.name()
+            ));
+        }
+        Ok(stored)
+    }
+
+    /// The stored bytes without checking the recorded checksum.
+    ///
+    /// This is what [`Reader::verify`] reads, since it reports a mismatch
+    /// rather than failing on one.
+    fn stored_block_unchecked(&self, data: &DataRef) -> Result<Cow<'_, [u8]>> {
         let location = data
             .location
             .as_ref()
@@ -223,8 +265,7 @@ impl Reader {
             }
 
             Location::Path { path, index } => {
-                let bytes = read_external_file(&self.resolve_relative(path)?, path)?;
-                Ok(Cow::Owned(extract_external(bytes, *index, path)?))
+                Ok(Cow::Owned(read_external_block(&self.resolve_relative(path)?, path, *index)?))
             }
             Location::Url { url, index } => {
                 let Some(fetch) = &self.url_resolver else {
@@ -257,12 +298,26 @@ impl Reader {
         let Some(checksum) = &data.checksum else {
             return Ok(ChecksumStatus::Absent);
         };
-        let stored = self.stored_block(data)?;
+        let stored = self.stored_block_unchecked(data)?;
         Ok(if digest(&stored, checksum.algorithm)? == checksum.digest {
             ChecksumStatus::Valid
         } else {
             ChecksumStatus::Invalid
         })
+    }
+
+    /// Whether to check a block against its recorded checksum when reading it.
+    ///
+    /// On by default. Turning it off trades integrity for speed: a checksum
+    /// costs a hash over the block every time it is read, which is worth
+    /// paying once and wasteful in a loop that reads the same block
+    /// repeatedly. A caller that turns it off and still wants to know can
+    /// call [`Reader::verify`], which reports a mismatch rather than failing.
+    ///
+    /// Blocks with no recorded checksum are unaffected: the spec makes them
+    /// optional, and their absence is not a failure.
+    pub fn set_verify_checksums(&mut self, verify: bool) {
+        self.verify_checksums = verify;
     }
 
     /// Install a resolver for `url(...)` blocks.
@@ -405,7 +460,7 @@ impl Reader {
 /// A named pipe or a character device passes every path check and then never
 /// ends: reading `/dev/zero` exhausts memory, reading a fifo blocks forever.
 /// Neither is a data blocks file, and a decoder has no reason to open one.
-fn read_external_file(path: &Path, locator: &str) -> Result<Vec<u8>> {
+fn read_external_block(path: &Path, locator: &str, index: Option<u64>) -> Result<Vec<u8>> {
     let metadata = std::fs::metadata(path)
         .map_err(|e| err!(NotFound, "{locator:?} could not be read: {e}"))?;
     if !metadata.is_file() {
@@ -414,10 +469,37 @@ fn read_external_file(path: &Path, locator: &str) -> Result<Vec<u8>> {
             "{locator:?} is not a regular file, so it is not a data block"
         ));
     }
-    Ok(std::fs::read(path)?)
+
+    // Which of the two shapes this is decides how much of it has to be read,
+    // so the signature is looked at before anything larger is committed to.
+    let mut file = std::fs::File::open(path).map_err(|e| err!(NotFound, "{locator:?}: {e}"))?;
+    let mut signature = [0u8; 8];
+    let is_blocks_file = match std::io::Read::read_exact(&mut file, &mut signature) {
+        Ok(()) => &signature == crate::distributed::BLOCKS_SIGNATURE,
+        // Too short to be a blocks file, so it can only be a plain resource.
+        Err(_) => false,
+    };
+
+    if !is_blocks_file {
+        if index.is_some() {
+            return Err(err!(
+                BadAttribute,
+                "{locator:?} names a block by identifier but is not an XISF data blocks file"
+            ));
+        }
+        // A plain external resource is its own block, so its whole contents
+        // are wanted and its size is not something to second-guess.
+        return Ok(std::fs::read(path)?);
+    }
+
+    let id = index.ok_or_else(|| {
+        err!(BadAttribute, "{locator:?} is a data blocks file, so the locator must name a block")
+    })?;
+    crate::distributed::read_block_from(&mut file, metadata.len(), id)?
+        .ok_or_else(|| err!(NotFound, "{locator:?} has no block with identifier {id}"))
 }
 
-/// Take one block out of an external file./// Take one block out of an external file.
+/// Take one block out of an external file.
 ///
 /// Two shapes are legal here and they are told apart by the file itself. An
 /// XISF *data blocks file* begins with `XISB0100` and holds an index naming

@@ -322,6 +322,31 @@ Still open:
   `orientation` is kept as a declaration rather than applied: the spec is
   explicit that a decoder must not reorient pixels for processing that depends
   on their physical layout.
+- ~~Structural limits on the header~~ — done. Nesting is capped at 256 and
+  element count at a million. The tree is built iteratively but walked,
+  cloned, compared and *dropped* recursively, and a stack overflow in Rust
+  aborts rather than unwinding, so a 2MB file of nested tags took the whole
+  process down. `descendants` is iterative now too.
+- ~~Checksums checked by default~~ — done. A file that records a checksum is
+  saying how to tell whether its bytes are the bytes that were written;
+  handing them over unchecked was a silent corruption the format went out of
+  its way to make detectable. `Reader::set_verify_checksums(false)` opts out.
+- ~~Bounded block index~~ — done. Index nodes may not repeat a position but
+  may overlap, so a hundred thousand of them could each declare a whole
+  file's worth of elements: 64KB of input asking for 134MB of index, and a
+  megabyte asking for tens of gigabytes. A `path(...)` block now seeks
+  through the index holding one element at a time, which also stops a
+  distributed unit's blocks file being read whole to take one image out of
+  it; the slice parser a `url(...)` block uses is bounded by what a file of
+  that size could honestly describe.
+- ~~Integer literals in binary, octal and hexadecimal~~ — done. The spec
+  permits `0b`, `0o` and `0x`, all of which Rust's own `parse` rejects, and
+  only the declared type says whether `0x80E950AB` is 2162774187 or
+  -2132193109. `Property::value` decodes per the declared type.
+- ~~The normal pixel storage model~~ — done. Both models were parsed, but
+  the samples came back as stored and the two are indistinguishable in a
+  `Vec`, so an unwary caller got shuffled colour channels silently.
+  `ImageRef::read_planar` returns channel order whatever the file used.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known
