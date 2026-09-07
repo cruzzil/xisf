@@ -45,6 +45,39 @@ fast path is for. It is roughly 28,000 times slower than `bytes()` only
 because that borrows rather than copying -- the honest comparison is against
 `memcpy`, and it is close to it.
 
+## What checking a checksum costs
+
+A block whose element records a `checksum` is verified when it is read, which
+is what the specification requires of a decoder and what makes a corrupt file
+an error rather than wrong pixels. It is not free, and the cost falls on
+exactly the files that were careful enough to record a digest.
+
+A 4096x4096 16-bit frame -- 32 MB, an ordinary CMOS sensor -- read as an
+attached uncompressed block:
+
+| Algorithm | Verified throughput | Added per frame |
+|---|---|---|
+| sha-1 | 2.23 GB/s | +15.1 ms |
+| sha-256 | 2.06 GB/s | +16.3 ms |
+| sha-512 | 606 MB/s | +55.4 ms |
+
+The comparison is stark in relative terms because the unverified path costs
+essentially nothing: an attached block is borrowed from the mapping, so
+*reading* it is a pointer and a length, and the hash is then the whole of the
+work. Against the disk read that must precede it -- tens of milliseconds from
+an NVMe drive, hundreds from a spinning one -- 15 ms is small, and against
+the typed read that usually follows it is about twice the cost.
+
+sha-512 is the outlier at nearly four times sha-256, which is worth knowing
+when choosing what to *write*: on 64-bit hardware sha-512 is usually the
+faster of the two, and it is slower here because this build has no assembly
+backend for it.
+
+`Reader::set_verify_checksums(false)` turns it off for a caller who reads the
+same block repeatedly, or who has already verified the file by other means.
+`verify()` remains available to check on demand, reporting a mismatch rather
+than failing on one.
+
 ## Known costs, not yet addressed
 
 - **Byte shuffling is the slowest non-codec step**, at about 757 MB/s for a

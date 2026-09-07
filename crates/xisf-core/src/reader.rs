@@ -308,11 +308,18 @@ impl Reader {
 
     /// Whether to check a block against its recorded checksum when reading it.
     ///
-    /// On by default. Turning it off trades integrity for speed: a checksum
-    /// costs a hash over the block every time it is read, which is worth
-    /// paying once and wasteful in a loop that reads the same block
-    /// repeatedly. A caller that turns it off and still wants to know can
-    /// call [`Reader::verify`], which reports a mismatch rather than failing.
+    /// On by default, because the specification requires a decoder to check a
+    /// digest the file went to the trouble of recording, and because handing
+    /// back corrupt bytes without a word is the worse failure.
+    ///
+    /// It costs one hash pass over the block: about 15 ms for a 32 MB frame
+    /// with sha-1 or sha-256, and about 55 ms with sha-512 -- roughly twice
+    /// what the typed read that usually follows it costs, and small against
+    /// the disk read that must precede it. See `docs/PERFORMANCE.md`.
+    ///
+    /// Turning it off is for a caller who reads the same block repeatedly, or
+    /// who has verified the file by other means; [`Reader::verify`] then
+    /// remains available on demand, reporting a mismatch rather than failing.
     ///
     /// Blocks with no recorded checksum are unaffected: the spec makes them
     /// optional, and their absence is not a failure.
