@@ -223,7 +223,7 @@ impl Reader {
             }
 
             Location::Path { path, index } => {
-                let bytes = std::fs::read(self.resolve_relative(path)?)?;
+                let bytes = read_external_file(&self.resolve_relative(path)?, path)?;
                 Ok(Cow::Owned(extract_external(bytes, *index, path)?))
             }
             Location::Url { url, index } => {
@@ -374,11 +374,50 @@ impl Reader {
                 }
             }
         }
-        Ok(base.join(candidate))
+        let joined = base.join(candidate);
+
+        // Checking the *components* is not enough. A locator with no `..` in
+        // it at all -- a plain `blocks.xisb` -- can be a symbolic link to
+        // anywhere, and following it reads a file the locator never named.
+        // Whoever supplies a malicious unit generally supplies the directory
+        // it unpacks into, so planting the link beside the header is exactly
+        // as easy as writing the header. Resolving both ends and checking
+        // containment is what actually holds.
+        let resolved = joined
+            .canonicalize()
+            .map_err(|e| err!(NotFound, "{locator:?} could not be resolved: {e}"))?;
+        let root = base
+            .canonicalize()
+            .map_err(|e| err!(NotFound, "the referring file's directory is unreadable: {e}"))?;
+        if !resolved.starts_with(&root) {
+            return Err(err!(
+                BadAttribute,
+                "{locator:?} resolves to {}, outside the referring file's directory",
+                resolved.display()
+            ));
+        }
+        Ok(resolved)
     }
 }
 
-/// Take one block out of an external file.
+/// Read an external block file, refusing anything that is not a regular file.
+///
+/// A named pipe or a character device passes every path check and then never
+/// ends: reading `/dev/zero` exhausts memory, reading a fifo blocks forever.
+/// Neither is a data blocks file, and a decoder has no reason to open one.
+fn read_external_file(path: &Path, locator: &str) -> Result<Vec<u8>> {
+    let metadata = std::fs::metadata(path)
+        .map_err(|e| err!(NotFound, "{locator:?} could not be read: {e}"))?;
+    if !metadata.is_file() {
+        return Err(err!(
+            BadAttribute,
+            "{locator:?} is not a regular file, so it is not a data block"
+        ));
+    }
+    Ok(std::fs::read(path)?)
+}
+
+/// Take one block out of an external file./// Take one block out of an external file.
 ///
 /// Two shapes are legal here and they are told apart by the file itself. An
 /// XISF *data blocks file* begins with `XISB0100` and holds an index naming
