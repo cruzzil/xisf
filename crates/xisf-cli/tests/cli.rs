@@ -107,8 +107,7 @@ fn verify_fails_on_a_corrupted_block() {
     // near the end of the file is not covered by the checksum at all.
     let file = xisf::XisfFile::open(&path).expect("open");
     let images = file.images();
-    let Some(xisf_core::block::Location::Attachment { position, size }) = images[0].location()
-    else {
+    let Some(xisf::Location::Attachment { position, size }) = images[0].location() else {
         panic!("expected an attached block");
     };
     assert!(*size > 0);
@@ -188,4 +187,38 @@ fn commands_accept_several_files() {
     let text = stdout(&output);
     assert!(text.contains("UInt8"), "{text}");
     assert!(text.contains("UInt16"), "{text}");
+}
+
+/// Piping into a program that stops reading -- `head`, `less` quit early --
+/// must end the tool quietly rather than panicking. Rust ignores `SIGPIPE` by
+/// default so the write fails as an error, and `println!` turns that into a
+/// panic, which is not what any other Unix tool does.
+#[cfg(unix)]
+#[test]
+fn a_closed_pipe_is_not_a_panic() {
+    use std::process::Stdio;
+
+    let path = corpus().join("Sample_F32_ZlibCompression_Sha256Security.xisf");
+    if !path.exists() {
+        eprintln!("skipping: corpus file missing");
+        return;
+    }
+
+    // `head -1` closes the pipe after one line, while `header` is still
+    // writing a header far longer than a pipe buffer.
+    let mut producer = Command::new(binary())
+        .arg("header")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+
+    let stdout = producer.stdout.take().expect("stdout");
+    let consumer = Command::new("head").arg("-1").stdin(stdout).output().expect("head");
+    assert!(consumer.status.success());
+
+    let output = producer.wait_with_output().expect("wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("panicked"), "the tool panicked on a closed pipe:\n{stderr}");
 }

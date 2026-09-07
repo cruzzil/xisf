@@ -8,8 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use xisf::XisfFile;
-use xisf_core::block::Location;
+use xisf::{Location, XisfFile};
 
 const USAGE: &str = "\
 xisftool -- inspect XISF (Extensible Image Serialization Format) files
@@ -31,12 +30,43 @@ OPTIONS:
 ";
 
 fn main() -> ExitCode {
+    // A tool whose output is routinely piped into `head` or `less` must treat
+    // a closed pipe as the ordinary end of its work. Rust's default is to
+    // ignore SIGPIPE so that writes fail as errors, which `println!` turns
+    // into a panic -- so `xisftool header big.xisf | head` printed a panic
+    // where it should have printed nothing. Restoring the default disposition
+    // makes the process die quietly on the signal, as every other Unix tool
+    // does.
+    #[cfg(unix)]
+    // SAFETY: setting a signal disposition before any thread is spawned and
+    // before any output is written.
+    unsafe {
+        libc_signal_default();
+    }
+
     match run() {
         Ok(code) => code,
         Err(message) => {
             eprintln!("xisftool: {message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Restore the default disposition for `SIGPIPE`.
+///
+/// Declared here rather than taken from `libc`, which this workspace does
+/// without: it is one call with a stable ABI, and a dependency for it would
+/// be carried by everyone building the tool.
+#[cfg(unix)]
+unsafe fn libc_signal_default() {
+    unsafe extern "C" {
+        fn signal(sig: i32, handler: usize) -> usize;
+    }
+    const SIGPIPE: i32 = 13;
+    const SIG_DFL: usize = 0;
+    unsafe {
+        signal(SIGPIPE, SIG_DFL);
     }
 }
 
@@ -132,7 +162,7 @@ fn info(options: &Options) -> Result<ExitCode, String> {
             println!("       {stored}");
             println!(
                 "       {} byte order{}{}",
-                if image.byte_order() == xisf_core::block::ByteOrder::Big {
+                if image.byte_order() == xisf::ByteOrder::Big {
                     "big-endian"
                 } else {
                     "little-endian"
@@ -271,11 +301,7 @@ fn describe(property: &xisf::PropertyRef<'_>) -> String {
 fn header(options: &Options) -> Result<ExitCode, String> {
     for path in &options.files {
         let file = open(path)?;
-        let reader = file.reader();
-        let layout = xisf_core::layout::scan(reader.bytes())
-            .map_err(|e| format!("{}: {e}", path.display()))?;
-        let text = xisf_core::layout::header_str(reader.bytes(), &layout)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = file.reader().header_text().map_err(|e| format!("{}: {e}", path.display()))?;
         println!("{text}");
     }
     Ok(ExitCode::SUCCESS)
@@ -290,19 +316,19 @@ fn verify(options: &Options) -> Result<ExitCode, String> {
         let file = open(path)?;
         for (n, image) in file.images().iter().enumerate() {
             match image.verify() {
-                Ok(xisf_core::reader::ChecksumStatus::Valid) => {
+                Ok(xisf::ChecksumStatus::Valid) => {
                     checked += 1;
                     if options.verbose {
                         println!("{}: [{n}] ok", path.display());
                     }
                 }
-                Ok(xisf_core::reader::ChecksumStatus::Absent) => {
+                Ok(xisf::ChecksumStatus::Absent) => {
                     absent += 1;
                     if options.verbose {
                         println!("{}: [{n}] no checksum recorded", path.display());
                     }
                 }
-                Ok(xisf_core::reader::ChecksumStatus::Invalid) => {
+                Ok(xisf::ChecksumStatus::Invalid) => {
                     failures += 1;
                     println!("{}: [{n}] CHECKSUM MISMATCH", path.display());
                 }

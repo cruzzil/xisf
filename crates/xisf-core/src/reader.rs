@@ -177,6 +177,16 @@ impl Reader {
         &self.header
     }
 
+    /// The header's XML source, exactly as the file holds it.
+    ///
+    /// The parsed [`Header`] is what a reader normally wants, but a tool that
+    /// shows a file to a person needs the text: the parse is lossy about
+    /// formatting, attribute order and comments, so re-serialising it would
+    /// show something the file does not contain.
+    pub fn header_text(&self) -> Result<&str> {
+        layout::header_str(&self.source, &self.layout)
+    }
+
     pub fn bytes(&self) -> &[u8] {
         &self.source
     }

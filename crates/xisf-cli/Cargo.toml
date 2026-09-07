@@ -22,13 +22,15 @@ path = "src/main.rs"
 # written to `doc/xisf/`. A `main.rs` has no public API to publish anyway.
 doc = false
 
+# `xisf` only. The engine crate is deliberately absent: this binary is the
+# first real consumer of the library, so what it needs is a fair test of
+# whether the public API is complete. Reaching past it into `xisf-core` would
+# hide gaps that every other consumer would then hit too.
 [dependencies]
 xisf.workspace = true
-xisf-core.workspace = true
 
 [dev-dependencies]
 xisf.workspace = true
-xisf-core.workspace = true
 
 [lints]
 workspace = true

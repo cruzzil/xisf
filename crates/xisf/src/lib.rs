@@ -26,19 +26,23 @@
 use std::borrow::Cow;
 use std::path::Path;
 
-use xisf_core::Reader;
-use xisf_core::block::{ByteOrder, Location};
-use xisf_core::header::Element;
-use xisf_core::reader::ChecksumStatus;
-
-pub use xisf_core::block::ChecksumAlgorithm;
+// Everything a caller can be handed by this crate's own API must be nameable
+// through this crate. A method returning a type only `xisf-core` exports
+// forces every consumer to depend on the engine directly, which defeats the
+// point of a facade -- and it is not hypothetical: `xisftool` did exactly
+// that, because `verify()` returns a `ChecksumStatus` that was not re-exported
+// and so could not be matched on.
+pub use xisf_core::Reader;
+pub use xisf_core::block::{ByteOrder, ChecksumAlgorithm, Codec, Compression, Location};
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::header::DataRef;
+pub use xisf_core::header::{Element, Header};
 pub use xisf_core::image::{
     Bounds, CfaElement, ColorFilterArray, ColorSpace, DisplayFunction, Gamma, Image, Orientation,
     PixelStorage, Resolution, ResolutionUnit, RgbWorkingSpace, SampleFormat,
 };
 pub use xisf_core::property::{Property, PropertyType, Scalar, ScalarValue, Shape};
+pub use xisf_core::reader::ChecksumStatus;
 pub use xisf_core::table::{Cell, Field, Structure, Table};
 pub use xisf_core::writer::{
     BlockOptions, Codec2 as WriteCodec, CompressionRequest, DistributedUnit, FitsKeyword,
