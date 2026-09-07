@@ -165,6 +165,15 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                     thumbnail.sample_format().name()
                 );
             }
+            if let Some(cfa) = image.color_filter_array() {
+                println!(
+                    "       CFA {}x{} {}{}",
+                    cfa.width,
+                    cfa.height,
+                    cfa.pattern_string(),
+                    cfa.name.as_deref().map_or(String::new(), |n| format!(" ({n})"))
+                );
+            }
             if let Some(profile) = image.icc_profile() {
                 match profile {
                     Ok(bytes) => println!("       ICC profile, {} bytes", bytes.len()),

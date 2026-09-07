@@ -15,10 +15,44 @@ use crate::block::{Codec, Compression};
 use crate::err;
 use crate::error::Result;
 
+/// The largest expansion ratio a codec can plausibly achieve.
+///
+/// DEFLATE's theoretical best is about 1032:1 and LZ4's is 255:1, so this is
+/// generous for both. It exists because `uncompressed_size` is a number in a
+/// file rather than a fact: without a bound, a header saying
+/// `compression="zlib:4398046511104"` over a hundred compressed bytes asks
+/// the reader to reserve four terabytes, and a decoder that obliges is a
+/// denial-of-service primitive that costs an attacker a hundred bytes.
+const MAX_EXPANSION_RATIO: u64 = 2048;
+
+/// The most that is reserved up front, whatever the header claims.
+///
+/// Beyond this the buffer grows as the data arrives, so an implausible
+/// declaration that slips past the ratio check still cannot commit the
+/// allocation before a single byte has been decompressed.
+// Only the codecs that decode into a growable buffer use this, so with none
+// of them compiled in it is unread -- correctly.
+#[cfg(any(feature = "zlib", feature = "zstd"))]
+const MAX_PREALLOCATION: usize = 64 << 20;
+
 /// Decompress and unshuffle a stored block.
 pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     let size = usize::try_from(compression.uncompressed_size)
         .map_err(|_| err!(Unsupported, "the block is too large for this platform"))?;
+
+    // Checked before anything is allocated, and against the bytes actually
+    // present rather than against a constant, so a small hostile block is
+    // refused while a large legitimate one is not.
+    let ceiling = (stored.len() as u64).saturating_mul(MAX_EXPANSION_RATIO).max(1024);
+    if compression.uncompressed_size > ceiling {
+        return Err(err!(
+            Compression,
+            "a {}-byte block claims to decompress to {} bytes, beyond any ratio {} can achieve",
+            stored.len(),
+            compression.uncompressed_size,
+            compression.codec.name()
+        ));
+    }
 
     let plain = decompress(stored, &compression.codec, size)?;
     if plain.len() != size {
@@ -48,7 +82,7 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "zlib")]
         Codec::Zlib => {
             use std::io::Read;
-            let mut out = Vec::with_capacity(size);
+            let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
             flate2::read::ZlibDecoder::new(stored)
                 .read_to_end(&mut out)
                 .map_err(|e| err!(Compression, "zlib: {e}"))?;
@@ -63,7 +97,7 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
         #[cfg(feature = "zstd")]
         Codec::Zstd => {
             use std::io::Read;
-            let mut out = Vec::with_capacity(size);
+            let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
             ruzstd::decoding::StreamingDecoder::new(stored)
                 .map_err(|e| err!(Compression, "zstd: {e}"))?
                 .read_to_end(&mut out)
@@ -146,6 +180,48 @@ mod tests {
         let data: Vec<u8> = (1..=9).collect();
         assert_eq!(unshuffle(&shuffle(&data, 4), 4), data);
         assert_eq!(*shuffle(&data, 4).last().unwrap(), 9);
+    }
+
+    /// `uncompressed_size` is a number in a file, not a fact. A hundred-byte
+    /// block claiming to expand to terabytes must be refused before anything
+    /// is reserved, or opening a file becomes a denial of service that costs
+    /// the attacker a hundred bytes.
+    #[test]
+    fn an_implausible_expansion_ratio_is_refused_before_allocating() {
+        let stored = vec![0u8; 100];
+        for declared in [1u64 << 42, u64::MAX / 2, 100 * MAX_EXPANSION_RATIO + 1] {
+            let compression = Compression {
+                codec: Codec::Zlib,
+                uncompressed_size: declared,
+                shuffle_item_size: None,
+            };
+            let err = decode(&stored, &compression).unwrap_err();
+            assert_eq!(err.kind(), crate::ErrorKind::Compression, "{declared} was not refused");
+            assert!(err.message().contains("beyond any ratio"), "{}", err.message());
+        }
+    }
+
+    /// The bound must not reject legitimate files. A small block that really
+    /// does expand a long way is normal -- a run of zeroes, say.
+    #[cfg(feature = "zlib")]
+    #[test]
+    fn a_genuinely_compressible_block_still_decodes() {
+        use std::io::Write;
+
+        let plain = vec![0u8; 500_000];
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&plain).unwrap();
+        let stored = encoder.finish().unwrap();
+
+        // Well over a hundred to one, and it must still be accepted.
+        assert!(plain.len() / stored.len() > 100, "this test needs a high ratio to be meaningful");
+        let compression = Compression {
+            codec: Codec::Zlib,
+            uncompressed_size: plain.len() as u64,
+            shuffle_item_size: None,
+        };
+        assert_eq!(decode(&stored, &compression).unwrap(), plain);
     }
 
     #[test]

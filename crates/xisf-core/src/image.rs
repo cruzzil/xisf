@@ -356,6 +356,138 @@ impl Resolution {
     }
 }
 
+/// One element of a colour filter array pattern.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CfaElement {
+    /// `0`: a nonexistent or undefined element.
+    Undefined,
+    Red,
+    Green,
+    Blue,
+    /// White or panchromatic.
+    White,
+    Cyan,
+    Magenta,
+    Yellow,
+}
+
+impl CfaElement {
+    fn parse(c: char) -> Option<Self> {
+        Some(match c {
+            '0' => CfaElement::Undefined,
+            'R' => CfaElement::Red,
+            'G' => CfaElement::Green,
+            'B' => CfaElement::Blue,
+            'W' => CfaElement::White,
+            'C' => CfaElement::Cyan,
+            'M' => CfaElement::Magenta,
+            'Y' => CfaElement::Yellow,
+            _ => return None,
+        })
+    }
+
+    /// The character the specification writes this element as.
+    pub fn as_char(self) -> char {
+        match self {
+            CfaElement::Undefined => '0',
+            CfaElement::Red => 'R',
+            CfaElement::Green => 'G',
+            CfaElement::Blue => 'B',
+            CfaElement::White => 'W',
+            CfaElement::Cyan => 'C',
+            CfaElement::Magenta => 'M',
+            CfaElement::Yellow => 'Y',
+        }
+    }
+}
+
+/// A `<ColorFilterArray>`: the mosaic pattern a sensor captured through.
+///
+/// A Bayer filter is the familiar case, but the format admits any rectangular
+/// pattern over eight element kinds. The pattern is ordered as it lies on the
+/// image, left to right then top to bottom, so `pattern[y * width + x]` is the
+/// filter over pixel `(x, y)` modulo the matrix size.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ColorFilterArray {
+    pub pattern: Vec<CfaElement>,
+    pub width: u64,
+    pub height: u64,
+    /// An optional human-readable name, e.g. "RGGB".
+    pub name: Option<String>,
+}
+
+impl ColorFilterArray {
+    /// Parse a `<ColorFilterArray>` element.
+    pub fn parse(element: &Element) -> Result<Self> {
+        if element.name != "ColorFilterArray" {
+            return Err(err!(
+                InvalidArgument,
+                "expected <ColorFilterArray>, got <{}>",
+                element.name
+            ));
+        }
+
+        let text = element
+            .attr("pattern")
+            .ok_or_else(|| err!(BadHeader, "<ColorFilterArray> has no pattern"))?;
+        let pattern = text
+            .trim()
+            .chars()
+            .map(|c| {
+                CfaElement::parse(c)
+                    .ok_or_else(|| err!(BadAttribute, "{c:?} is not a CFA pattern element"))
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let dimension = |name: &str| -> Result<u64> {
+            let text = element
+                .attr(name)
+                .ok_or_else(|| err!(BadHeader, "<ColorFilterArray> has no {name}"))?;
+            let value = text.trim().parse::<u64>().map_err(|_| {
+                err!(BadAttribute, "<ColorFilterArray> {name}={text:?} is not an integer")
+            })?;
+            if value == 0 {
+                return Err(err!(BadAttribute, "<ColorFilterArray> {name} must be above zero"));
+            }
+            Ok(value)
+        };
+        let width = dimension("width")?;
+        let height = dimension("height")?;
+
+        // The pattern length is the matrix, so a mismatch means the two
+        // disagree about the sensor -- and a decoder that trusted the
+        // dimensions would demosaic with a pattern shifted by however much.
+        let expected = width
+            .checked_mul(height)
+            .ok_or_else(|| err!(BadAttribute, "<ColorFilterArray> dimensions overflow"))?;
+        if pattern.len() as u64 != expected {
+            return Err(err!(
+                BadAttribute,
+                "<ColorFilterArray> is {width}x{height} but its pattern has {} elements",
+                pattern.len()
+            ));
+        }
+
+        Ok(ColorFilterArray {
+            pattern,
+            width,
+            height,
+            name: element.attr("name").map(str::to_owned),
+        })
+    }
+
+    /// The filter over pixel `(x, y)`, which repeats across the image.
+    pub fn element_at(&self, x: u64, y: u64) -> CfaElement {
+        let index = (y % self.height) * self.width + (x % self.width);
+        self.pattern[index as usize]
+    }
+
+    /// The pattern as the specification writes it.
+    pub fn pattern_string(&self) -> String {
+        self.pattern.iter().map(|e| e.as_char()).collect()
+    }
+}
+
 /// A `<Thumbnail>`: a small preview, which is an image in its own right.
 ///
 /// Parsed with the same code as an `<Image>`, because it *is* one -- same
@@ -473,6 +605,51 @@ mod tests {
         assert_eq!(thumbnail.channels, 3);
         assert_eq!(thumbnail.sample_format, SampleFormat::UInt8);
         assert_eq!(thumbnail.data_size(), Some(400 * 300 * 3));
+    }
+
+    fn cfa_of(attrs: &str) -> Result<ColorFilterArray> {
+        let xml = format!(r#"<xisf version="1.0"><ColorFilterArray {attrs}/></xisf>"#);
+        let header = header::parse(&xml)?;
+        ColorFilterArray::parse(&header.root.children[0])
+    }
+
+    #[test]
+    fn a_bayer_pattern_parses_and_repeats() {
+        let cfa = cfa_of(r#"pattern="RGGB" width="2" height="2" name="RGGB""#).unwrap();
+        assert_eq!(cfa.pattern_string(), "RGGB");
+        assert_eq!(cfa.name.as_deref(), Some("RGGB"));
+
+        // Ordered left to right, then top to bottom.
+        assert_eq!(cfa.element_at(0, 0), CfaElement::Red);
+        assert_eq!(cfa.element_at(1, 0), CfaElement::Green);
+        assert_eq!(cfa.element_at(0, 1), CfaElement::Green);
+        assert_eq!(cfa.element_at(1, 1), CfaElement::Blue);
+
+        // And it tiles across the sensor.
+        assert_eq!(cfa.element_at(2, 2), CfaElement::Red);
+        assert_eq!(cfa.element_at(101, 100), CfaElement::Green);
+    }
+
+    #[test]
+    fn every_pattern_element_the_spec_names_is_understood() {
+        let cfa = cfa_of(r#"pattern="0RGBWCMY" width="8" height="1""#).unwrap();
+        assert_eq!(cfa.pattern[0], CfaElement::Undefined);
+        assert_eq!(cfa.pattern[4], CfaElement::White);
+        assert_eq!(cfa.pattern[7], CfaElement::Yellow);
+        assert_eq!(cfa.pattern_string(), "0RGBWCMY");
+    }
+
+    /// A pattern that does not fill its declared matrix means the two
+    /// disagree about the sensor, and demosaicing on the dimensions alone
+    /// would use a pattern shifted by however much.
+    #[test]
+    fn a_pattern_that_does_not_match_its_dimensions_is_refused() {
+        assert!(cfa_of(r#"pattern="RGGB" width="3" height="2""#).is_err());
+        assert!(cfa_of(r#"pattern="RGG" width="2" height="2""#).is_err());
+        assert!(cfa_of(r#"pattern="RGGB" width="0" height="2""#).is_err());
+        assert!(cfa_of(r#"pattern="RGXB" width="2" height="2""#).is_err(), "X is not an element");
+        assert!(cfa_of(r#"width="2" height="2""#).is_err());
+        assert!(cfa_of(r#"pattern="RGGB" height="2""#).is_err());
     }
 
     #[test]

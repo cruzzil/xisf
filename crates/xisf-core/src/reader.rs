@@ -12,6 +12,10 @@ use crate::error::Result;
 use crate::header::{self, DataRef, Header};
 use crate::layout::{self, Layout};
 
+/// How a caller fetches a `url(...)` block. See
+/// [`Reader::set_url_resolver`].
+pub type UrlResolver = Box<dyn Fn(&str) -> Result<Vec<u8>> + Send + Sync>;
+
 /// Whether a block's stored bytes matched its recorded checksum.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChecksumStatus {
@@ -61,16 +65,28 @@ impl std::fmt::Debug for Source {
 }
 
 /// An open XISF file.
-#[derive(Debug)]
 pub struct Reader {
     source: Source,
     layout: Layout,
     header: Header,
     /// See [`Reader::follow_absolute_paths`].
     allow_absolute_paths: bool,
+    /// See [`Reader::set_url_resolver`].
+    url_resolver: Option<UrlResolver>,
     /// Where the file came from, so a `path:` block can be resolved relative
     /// to it, as the spec requires.
     path: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for Reader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Reader")
+            .field("source", &self.source)
+            .field("path", &self.path)
+            .field("images", &self.header.images().len())
+            .field("url_resolver", &self.url_resolver.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl Reader {
@@ -95,6 +111,7 @@ impl Reader {
                 header,
                 path: Some(path.into()),
                 allow_absolute_paths: false,
+                url_resolver: None,
             });
         }
 
@@ -115,6 +132,7 @@ impl Reader {
                 header,
                 path: Some(path.into()),
                 allow_absolute_paths: false,
+                url_resolver: None,
             })
         }
     }
@@ -128,6 +146,7 @@ impl Reader {
             header,
             path: None,
             allow_absolute_paths: false,
+            url_resolver: None,
         })
     }
 
@@ -207,8 +226,16 @@ impl Reader {
                 let bytes = std::fs::read(self.resolve_relative(path)?)?;
                 Ok(Cow::Owned(extract_external(bytes, *index, path)?))
             }
-            Location::Url { url, .. } => {
-                Err(err!(Unsupported, "external URL blocks are not read: {url}"))
+            Location::Url { url, index } => {
+                let Some(fetch) = &self.url_resolver else {
+                    return Err(err!(
+                        Unsupported,
+                        "{url:?} is a remote block; install a resolver with \
+                         `set_url_resolver` to allow fetching"
+                    ));
+                };
+                let bytes = fetch(url)?;
+                Ok(Cow::Owned(extract_external(bytes, *index, url)?))
             }
         }
     }
@@ -236,6 +263,56 @@ impl Reader {
         } else {
             ChecksumStatus::Invalid
         })
+    }
+
+    /// Install a resolver for `url(...)` blocks.
+    ///
+    /// **This library never makes a network request itself, and that is a
+    /// deliberate design decision rather than an omission.**
+    ///
+    /// A `url(...)` locator is a request, written in a file, for the reader to
+    /// go and fetch something. Honouring it automatically would mean that
+    /// `Reader::open` on a local file could reach out to a host the caller
+    /// never named -- which is a server-side request forgery primitive when
+    /// the caller is a service, and reaches cloud metadata endpoints and
+    /// internal addresses that are not otherwise exposed. It would also make
+    /// timeouts, proxies, redirects and certificate trust this crate's
+    /// problem, and pull in an HTTP and TLS stack that the rest of the
+    /// workspace does without.
+    ///
+    /// Handing the decision to the caller solves all of it at once. The
+    /// resolver receives the URL exactly as the file wrote it and returns the
+    /// bytes, so a caller can allow only the schemes and hosts they mean to,
+    /// apply their own timeouts, or refuse. Without one, a remote block is an
+    /// `Unsupported` error that says so.
+    ///
+    /// ```no_run
+    /// # use xisf_core::Reader;
+    /// # fn main() -> xisf_core::Result<()> {
+    /// let mut reader = Reader::open("unit.xisf")?;
+    /// reader.set_url_resolver(|url| {
+    ///     if !url.starts_with("https://data.example.com/") {
+    ///         return Err(xisf_core::Error::new(
+    ///             xisf_core::ErrorKind::Unsupported,
+    ///             format!("refusing to fetch {url}"),
+    ///         ));
+    ///     }
+    ///     // ... fetch and return the bytes ...
+    ///     # unimplemented!()
+    /// });
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_url_resolver(
+        &mut self,
+        resolver: impl Fn(&str) -> Result<Vec<u8>> + Send + Sync + 'static,
+    ) {
+        self.url_resolver = Some(Box::new(resolver));
+    }
+
+    /// Remove any installed resolver, so remote blocks are refused again.
+    pub fn clear_url_resolver(&mut self) {
+        self.url_resolver = None;
     }
 
     /// Whether to follow `path(...)` locators that name an absolute path.
@@ -515,6 +592,55 @@ mod tests {
 
     // Needs a hash implementation compiled in; without the feature the
     // library correctly refuses rather than pretending to verify.
+    /// A remote block is refused until the caller says how to fetch it, and
+    /// the resolver sees the URL exactly as the file wrote it -- which is
+    /// what lets a caller apply a policy rather than trusting the file.
+    #[test]
+    fn url_blocks_need_a_resolver_the_caller_installs() {
+        let xml =
+            r#"<xisf version="1.0"><Image location="url(https://example.com/b.dat)"/></xisf>"#;
+        let mut reader = Reader::from_bytes(build(xml, &[])).unwrap();
+        let data = reader.header().images()[0].data.clone();
+
+        let err = reader.stored_block(&data).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::Unsupported);
+        assert!(err.message().contains("set_url_resolver"), "{}", err.message());
+
+        // With a resolver, the URL arrives verbatim.
+        reader.set_url_resolver(|url| {
+            assert_eq!(url, "https://example.com/b.dat");
+            Ok(b"fetched".to_vec())
+        });
+        assert_eq!(&*reader.stored_block(&data).unwrap(), b"fetched");
+
+        // And a resolver may refuse, which must surface rather than be eaten.
+        reader.set_url_resolver(|url| {
+            Err(crate::Error::new(ErrorKind::Unsupported, format!("refusing {url}")))
+        });
+        assert!(reader.stored_block(&data).unwrap_err().message().contains("refusing"));
+
+        reader.clear_url_resolver();
+        assert_eq!(reader.stored_block(&data).unwrap_err().kind(), ErrorKind::Unsupported);
+    }
+
+    /// A remote data blocks file is addressed by identifier exactly as a
+    /// local one is, so the resolver only has to supply bytes.
+    #[test]
+    fn a_remote_blocks_file_is_addressed_by_identifier() {
+        let blocks = crate::distributed::write_blocks_file(&[
+            (1, b"first".to_vec()),
+            (0x2a, b"the wanted one".to_vec()),
+        ])
+        .unwrap();
+
+        let xml = r#"<xisf version="1.0"><Image location="url(https://h/b.xisb):0x2a"/></xisf>"#;
+        let mut reader = Reader::from_bytes(build(xml, &[])).unwrap();
+        reader.set_url_resolver(move |_| Ok(blocks.clone()));
+
+        let data = reader.header().images()[0].data.clone();
+        assert_eq!(&*reader.stored_block(&data).unwrap(), b"the wanted one");
+    }
+
     #[cfg(feature = "checksums")]
     #[test]
     fn checksums_are_over_the_stored_bytes() {

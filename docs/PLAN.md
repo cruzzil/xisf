@@ -278,10 +278,15 @@ Still open:
   file, and a round trip through the ordinary `Reader` is tested.
 - ~~Properties serialised as data blocks~~ — done for vectors and matrices.
   `Table` remains, which is a separate core element rather than a `Property`.
-- ~~`ICCProfile`, `Thumbnail`~~ and `Resolution` — done. `ColorFilterArray`
-  and `DisplayFunction` remain; no corpus file carries either.
-- `url:` locators, which need an HTTP client and a decision about whether a
-  library should fetch anything at all.
+- ~~`ICCProfile`, `Thumbnail`, `Resolution`, `ColorFilterArray`~~ — done.
+  `DisplayFunction` remains, which is a display hint rather than data.
+- ~~`url:` locators~~ — done, via a caller-supplied resolver. The library
+  never makes a network request itself: honouring a URL written in a file
+  would let `open` on a local file reach a host the caller never named, which
+  is a server-side request forgery primitive when the caller is a service.
+  `Reader::set_url_resolver` hands the URL to the caller and takes bytes back,
+  so policy, timeouts and TLS belong to whoever can actually decide them --
+  and the workspace keeps its lack of an HTTP stack.
 - XML digital signatures, deliberately out of scope for 1.0.
 
 Digital signatures are out of scope for 1.0 and will be recorded as a known

@@ -34,7 +34,8 @@ use xisf_core::reader::ChecksumStatus;
 pub use xisf_core::block::ChecksumAlgorithm;
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::image::{
-    Bounds, ColorSpace, Image, PixelStorage, Resolution, ResolutionUnit, SampleFormat,
+    Bounds, CfaElement, ColorFilterArray, ColorSpace, Image, PixelStorage, Resolution,
+    ResolutionUnit, SampleFormat,
 };
 pub use xisf_core::property::{Property, PropertyType, Scalar, Shape};
 pub use xisf_core::writer::{BlockOptions, Codec2 as WriteCodec, CompressionRequest};
@@ -259,6 +260,17 @@ impl<'a> ImageRef<'a> {
     pub fn icc_profile(&self) -> Option<Result<Cow<'a, [u8]>>> {
         let element = self.element.children_named("ICCProfile").next()?;
         Some(self.file.reader.block(&element.data))
+    }
+
+    /// The image's colour filter array, if it is a mosaiced sensor image.
+    ///
+    /// Its presence is what says the pixels are a mosaic and need
+    /// demosaicing; an encoder is forbidden from attaching one to an image
+    /// that is not mosaiced, so this is a reliable signal rather than a hint.
+    pub fn color_filter_array(&self) -> Option<ColorFilterArray> {
+        self.element
+            .children_named("ColorFilterArray")
+            .find_map(|e| ColorFilterArray::parse(e).ok())
     }
 
     /// The image's thumbnail, if it carries one.
