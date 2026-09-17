@@ -25,6 +25,8 @@
 //! forever, and a corrupt file is exactly where that shows up, so the walk
 //! below is bounded and refuses to revisit a node.
 
+use alloc::collections::BTreeSet;
+
 use crate::err;
 use crate::error::Result;
 
@@ -138,7 +140,11 @@ pub fn parse_blocks_file(bytes: &[u8]) -> Result<BlocksIndex> {
     let max_elements = bytes.len() / IndexElement::SIZE;
 
     let mut elements = Vec::new();
-    let mut seen: Vec<u64> = Vec::new();
+    // A set rather than a list: this is searched once per node, so a linear
+    // scan makes the walk quadratic and hands back the cost the MAX_NODES
+    // bound was meant to cap -- a hundred thousand chained nodes fit in one
+    // and a half megabytes and took the better part of a second to refuse.
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut position = BLOCKS_PREAMBLE_LEN as u64;
 
     for _ in 0..MAX_NODES {
@@ -148,10 +154,9 @@ pub fn parse_blocks_file(bytes: &[u8]) -> Result<BlocksIndex> {
         }
         // A cycle would otherwise loop until the bound, which is a slow way
         // to say "corrupt". Naming it is better than timing out.
-        if seen.contains(&position) {
+        if !seen.insert(position) {
             return Err(err!(BadHeader, "the block index loops back to position {position}"));
         }
-        seen.push(position);
 
         let start = usize::try_from(position)
             .map_err(|_| err!(Truncated, "an index node lies beyond this platform's range"))?;
@@ -231,17 +236,16 @@ pub fn read_block_from<R: std::io::Read + std::io::Seek>(
     // the file describing it.
     let max_elements = file_len / IndexElement::SIZE as u64;
     let mut counted = 0u64;
-    let mut seen: Vec<u64> = Vec::new();
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut position = BLOCKS_PREAMBLE_LEN as u64;
 
     for _ in 0..MAX_NODES {
         if position == 0 {
             return Ok(None);
         }
-        if seen.contains(&position) {
+        if !seen.insert(position) {
             return Err(err!(BadHeader, "the block index loops back to position {position}"));
         }
-        seen.push(position);
 
         if position.checked_add(16).is_none_or(|end| end > file_len) {
             return Err(err!(Truncated, "an index node at {position} runs past the end"));
@@ -322,16 +326,15 @@ pub fn write_blocks_file(blocks: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
         .checked_add(node_size)
         .ok_or_else(|| err!(Unsupported, "too many blocks for this platform"))?;
 
-    let mut seen: Vec<u64> = Vec::new();
+    let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut elements = Vec::with_capacity(blocks.len());
     let mut position = first_block as u64;
     for (id, data) in blocks {
         // The identifier is how the header names a block, so a duplicate
         // makes the file ambiguous rather than merely odd.
-        if seen.contains(id) {
+        if !seen.insert(*id) {
             return Err(err!(InvalidArgument, "two blocks share the identifier {id}"));
         }
-        seen.push(*id);
 
         elements.push(IndexElement {
             id: *id,

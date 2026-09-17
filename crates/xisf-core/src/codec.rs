@@ -34,6 +34,28 @@ const MAX_EXPANSION_RATIO: u64 = 2048;
 // of them compiled in it is unread -- correctly.
 const MAX_PREALLOCATION: usize = 64 << 20;
 
+/// How many bytes a streaming decoder is allowed to produce for a block that
+/// declares `size`.
+///
+/// The ratio check in [`decode`] bounds the size a header *claims*. It cannot
+/// bound what the stream actually contains, and those are different numbers:
+/// a block may declare a modest size -- sailing through the ratio check, which
+/// only ever looks upward -- over a stream that really expands a thousandfold.
+/// `read_to_end` on an unbounded decoder runs that stream to completion, so
+/// the length check after it fires only once the memory has been committed,
+/// which is too late to be a defence. Two hundred kilobytes of zeroes is a
+/// quarter of a gigabyte decompressed, and the file costs the attacker nothing.
+///
+/// Stopping one byte past the declaration is what makes the lie detectable:
+/// the decoder cannot run away, and a stream that produces more than it
+/// promised comes back one byte long and is refused by the equality check that
+/// follows. LZ4 needs no such bound -- it decodes into a caller-sized buffer
+/// and so is already limited by construction.
+#[cfg(any(feature = "zlib", feature = "zstd"))]
+fn output_limit(size: usize) -> u64 {
+    (size as u64).saturating_add(1)
+}
+
 /// Decompress and unshuffle a stored block.
 pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     let size = usize::try_from(compression.uncompressed_size)
@@ -147,6 +169,7 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
             use std::io::Read;
             let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
             flate2::read::ZlibDecoder::new(stored)
+                .take(output_limit(size))
                 .read_to_end(&mut out)
                 .map_err(|e| err!(Compression, "zlib: {e}"))?;
             Ok(out)
@@ -163,6 +186,7 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
             let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
             ruzstd::decoding::StreamingDecoder::new(stored)
                 .map_err(|e| err!(Compression, "zstd: {e}"))?
+                .take(output_limit(size))
                 .read_to_end(&mut out)
                 .map_err(|e| err!(Compression, "zstd: {e}"))?;
             Ok(out)
@@ -263,6 +287,47 @@ mod tests {
             assert_eq!(err.kind(), crate::ErrorKind::Compression, "{declared} was not refused");
             assert!(err.message().contains("beyond any ratio"), "{}", err.message());
         }
+    }
+
+    /// The ratio check only ever looks *upward*, at the size a header claims.
+    /// A block that declares a modest size over a stream which really expands
+    /// a thousandfold passes it untouched, so without a bound on the decoder
+    /// itself `read_to_end` runs the whole stream and commits the memory
+    /// before the length check downstream can object.
+    ///
+    /// Producing exactly one byte more than was declared is the proof that
+    /// the decoder stopped where it was told to: had it run to completion it
+    /// would report the stream's real length instead.
+    #[cfg(feature = "zlib")]
+    #[test]
+    fn a_stream_that_outgrows_its_declaration_stops_at_the_declaration() {
+        use std::io::Write;
+
+        // Eight megabytes of zeroes in a few kilobytes of zlib.
+        let plain = vec![0u8; 8 << 20];
+        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        encoder.write_all(&plain).unwrap();
+        let stored = encoder.finish().unwrap();
+
+        // The declaration is small, so the ratio check has nothing to catch:
+        // a lie downward is still a lie.
+        let declared = 1024;
+        let ceiling = (stored.len() as u64).saturating_mul(MAX_EXPANSION_RATIO).max(1024);
+        assert!(declared <= ceiling, "this test is meaningless if the ratio check fires");
+
+        let compression = Compression {
+            codec: Codec::Zlib,
+            uncompressed_size: declared,
+            shuffle_item_size: None,
+            subblocks: Vec::new(),
+        };
+        let err = decode(&stored, &compression).unwrap_err();
+        assert_eq!(err.kind(), crate::ErrorKind::Compression);
+        assert!(
+            err.message().contains(&format!("produced {}", declared + 1)),
+            "the decoder ran past the declared size: {}",
+            err.message()
+        );
     }
 
     /// The bound must not reject legitimate files. A small block that really

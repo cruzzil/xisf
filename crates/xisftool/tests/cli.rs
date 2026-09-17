@@ -263,3 +263,39 @@ fn the_tool_depends_on_the_public_library_only() {
         );
     }
 }
+
+/// A header is untrusted text on its way to a device that executes some of
+/// it. A file whose FITS keywords and property values carry ANSI escapes must
+/// be *described* by `info`, not obeyed by the terminal running it.
+#[test]
+fn escape_sequences_in_a_header_are_shown_rather_than_executed() {
+    let xml = concat!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf">"#,
+        r#"<Image geometry="2:2:1" sampleFormat="UInt8" location="inline:base64">AAAAAA==</Image>"#,
+        "<Property id=\"Hostile\" type=\"String\">\u{1b}]0;hijacked\u{7}</Property>",
+        r#"</xisf>"#,
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let dir = std::env::temp_dir().join("xisftool-escape-test");
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    let path = dir.join("hostile.xisf");
+    std::fs::write(&path, &bytes).expect("write hostile file");
+
+    let output = run(&["info", "-v", path.to_str().unwrap()]);
+    let text = stdout(&output);
+
+    assert!(
+        !output.stdout.contains(&0x1b),
+        "an ESC byte reached stdout; the terminal would have obeyed it:\n{text}"
+    );
+    assert!(!output.stdout.contains(&0x07), "a BEL byte reached stdout:\n{text}");
+    // Neutralised, not dropped: the value is still reported, just inertly.
+    assert!(text.contains("\\x1b"), "the escape was not shown as data:\n{text}");
+    assert!(text.contains("hijacked"), "the surrounding text was lost:\n{text}");
+
+    std::fs::remove_file(&path).ok();
+}

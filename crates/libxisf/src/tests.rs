@@ -26,6 +26,23 @@ fn sample_file(format: SampleFormat, channels: u64) -> Vec<u8> {
     writer.to_bytes().expect("to_bytes")
 }
 
+/// A hand-built file whose `<Image>` declares more pixels than its block
+/// holds. The writer cannot produce this, which is the point: it is what a
+/// hostile or damaged file looks like.
+fn file_with_a_short_block() -> Vec<u8> {
+    // geometry 4:4:1 UInt8 is sixteen bytes; the inline block decodes to three.
+    let xml = concat!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf">"#,
+        r#"<Image geometry="4:4:1" sampleFormat="UInt8" location="inline:base64">AAAA</Image>"#,
+        r#"</xisf>"#,
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    bytes
+}
+
 /// Open a file the way C would, from memory.
 fn open(bytes: &[u8]) -> (*mut XisfFile, i32) {
     let mut err = -1;
@@ -318,5 +335,27 @@ fn an_absent_checksum_is_not_a_failure() {
     let (file, _) = open(&bytes);
     let image = unsafe { xisf_image_at(file, 0) };
     assert_eq!(unsafe { xisf_image_verify(image) }, XisfError::Ok as i32);
+    unsafe { xisf_close(file) };
+}
+
+/// A C caller sizes its buffer from `xisf_image_data_size`. If a block shorter
+/// than the geometry were copied in full and reported as success, the tail of
+/// that buffer would keep whatever the allocator last left there and the
+/// caller would have no way to tell -- so the short block is refused outright.
+#[test]
+fn a_block_shorter_than_the_geometry_is_refused_and_leaves_the_buffer_untouched() {
+    let bytes = file_with_a_short_block();
+    let (file, err) = open(&bytes);
+    assert_eq!(err, XisfError::Ok as i32);
+    let image = unsafe { xisf_image_at(file, 0) };
+
+    let size = unsafe { xisf_image_data_size(image) } as usize;
+    assert_eq!(size, 16, "the geometry declares sixteen bytes");
+
+    let mut buffer = vec![0xAAu8; size];
+    let rc = unsafe { xisf_image_read(image, buffer.as_mut_ptr().cast::<c_void>(), size) };
+    assert_eq!(rc, XisfError::Truncated as i32, "a short block was accepted");
+    assert!(buffer.iter().all(|b| *b == 0xAA), "the buffer was written to anyway");
+
     unsafe { xisf_close(file) };
 }

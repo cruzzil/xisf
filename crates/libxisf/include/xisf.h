@@ -203,6 +203,11 @@ uint64_t xisf_image_data_size(const xisf_image_t *image);
  * xisf_image_data_size(), or XISF_ERR_INVALID_ARGUMENT is returned and
  * nothing is written.  Samples arrive in the byte order the file stored them
  * in -- see xisf_image_byte_order() -- and are not converted.
+ *
+ * The file's data block must hold exactly the pixels its geometry describes.
+ * A block shorter than that is XISF_ERR_TRUNCATED and nothing is written, so
+ * a successful return always means the whole buffer was filled -- you are
+ * never handed a partly written buffer whose tail is uninitialised memory.
  */
 xisf_error_t xisf_image_read(const xisf_image_t *image, void *buffer, size_t size);
 

@@ -144,6 +144,17 @@ const MAX_DEPTH: usize = 256;
 /// into. PixInsight's own files run to a few hundred elements.
 const MAX_ELEMENTS: usize = 1_000_000;
 
+/// How many attributes a header may declare in total before it is refused.
+///
+/// [`MAX_ELEMENTS`] bounds the tree's nodes but says nothing about their
+/// width, and an attribute is the cheaper thing to write: `a=""` is five bytes
+/// of XML and costs a `(String, String)` and two allocations to hold, so a
+/// single element with nothing but attributes expands by a wider factor than
+/// a header full of empty tags. The budget is counted across the whole header
+/// rather than per element, because a limit on each of a million elements is
+/// no limit at all. PixInsight's own files declare a few thousand.
+const MAX_ATTRIBUTES: usize = 2_000_000;
+
 pub fn parse(xml: &str) -> Result<Header> {
     let mut reader = Reader::from_str(xml);
     let config = reader.config_mut();
@@ -154,6 +165,7 @@ pub fn parse(xml: &str) -> Result<Header> {
     let mut stack: Vec<Element> = Vec::new();
     let mut root: Option<Element> = None;
     let mut elements = 0usize;
+    let mut attributes = 0usize;
 
     loop {
         match reader.read_event() {
@@ -170,11 +182,11 @@ pub fn parse(xml: &str) -> Result<Header> {
                         "the header is nested more than {MAX_DEPTH} elements deep"
                     ));
                 }
-                stack.push(element_from(&start)?);
+                stack.push(element_from(&start, &mut attributes)?);
             }
             Ok(Event::Empty(start)) => {
                 count(&mut elements)?;
-                let element = element_from(&start)?;
+                let element = element_from(&start, &mut attributes)?;
                 finish(element, &mut stack, &mut root)?;
             }
             Ok(Event::End(_)) => {
@@ -308,7 +320,7 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
     Ok(())
 }
 
-fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
+fn element_from(start: &quick_xml::events::BytesStart<'_>, budget: &mut usize) -> Result<Element> {
     let qname = start.name();
     let raw = core::str::from_utf8(qname.as_ref())
         .map_err(|e| err!(BadHeader, "an element name is not UTF-8: {e}"))?;
@@ -321,6 +333,13 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>) -> Result<Element> {
     let mut subblocks: Option<Vec<(u64, u64)>> = None;
 
     for attribute in start.attributes() {
+        *budget += 1;
+        if *budget > MAX_ATTRIBUTES {
+            return Err(err!(
+                BadHeader,
+                "the header declares more than {MAX_ATTRIBUTES} attributes"
+            ));
+        }
         let attribute = attribute.map_err(|e| err!(BadHeader, "in <{name}>: {e}"))?;
         let key_raw = core::str::from_utf8(attribute.key.as_ref())
             .map_err(|e| err!(BadHeader, "an attribute name is not UTF-8: {e}"))?;

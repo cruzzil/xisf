@@ -129,6 +129,31 @@ fn open(path: &Path) -> Result<XisfFile, String> {
     XisfFile::open(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Render a string from a file's header safely enough to print to a terminal.
+///
+/// Everything in a header is attacker-controlled text on its way to a device
+/// that interprets some of it as commands. An ESC introduces a control
+/// sequence: `\x1b[2J` clears the screen, and the OSC forms can retitle the
+/// window or, on terminals that answer them, put text into the clipboard or
+/// the input buffer. A tool whose whole job is to show you an untrusted file
+/// must not let that file decide what the terminal does.
+///
+/// Printable text -- including every non-ASCII script, which FITS keywords and
+/// property values legitimately carry -- passes through untouched. Anything
+/// the Unicode standard calls a control character is shown as an escape
+/// instead, so it is visible as data rather than obeyed as an instruction.
+/// Tab survives because it is ordinary whitespace in a `comment`.
+fn safe(text: &str) -> String {
+    if !text.chars().any(|c| c.is_control() && c != '\t') {
+        return text.to_string();
+    }
+    text.chars()
+        .map(|c| {
+            if c.is_control() && c != '\t' { format!("\\x{:02x}", c as u32) } else { c.to_string() }
+        })
+        .collect()
+}
+
 fn info(options: &Options) -> Result<ExitCode, String> {
     for (index, path) in options.files.iter().enumerate() {
         if index > 0 {
@@ -155,8 +180,8 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 }
                 Some(Location::Embedded) => "embedded".to_string(),
                 Some(Location::Inline { encoding }) => format!("inline, {encoding:?}"),
-                Some(Location::Path { path, .. }) => format!("external file {path}"),
-                Some(Location::Url { url, .. }) => format!("external URL {url}"),
+                Some(Location::Path { path, .. }) => format!("external file {}", safe(path)),
+                Some(Location::Url { url, .. }) => format!("external URL {}", safe(url)),
                 None => "no data block".to_string(),
             };
             println!("       {stored}");
@@ -208,8 +233,8 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                     "       CFA {}x{} {}{}",
                     cfa.width,
                     cfa.height,
-                    cfa.pattern_string(),
-                    cfa.name.as_deref().map_or(String::new(), |n| format!(" ({n})"))
+                    safe(&cfa.pattern_string()),
+                    cfa.name.as_deref().map_or(String::new(), |n| format!(" ({})", safe(n)))
                 );
             }
             if let Some(profile) = image.icc_profile() {
@@ -225,20 +250,20 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 };
                 println!(
                     "       RGBWS {}{gamma}",
-                    space.name.as_deref().map_or(String::new(), |n| format!("{n}, "))
+                    space.name.as_deref().map_or(String::new(), |n| format!("{}, ", safe(n)))
                 );
             }
             if let Some(df) = image.display_function() {
                 println!(
                     "       display function{}{}",
-                    df.name.as_deref().map_or(String::new(), |n| format!(" {n}")),
+                    df.name.as_deref().map_or(String::new(), |n| format!(" {}", safe(n))),
                     if df.is_identity() { " (identity)" } else { "" }
                 );
             }
             for table in image.tables() {
                 println!(
                     "       table {}, {} row(s) x {} column(s)",
-                    table.id,
+                    safe(&table.id),
                     table.rows.len(),
                     table.structure.fields.len()
                 );
@@ -246,9 +271,12 @@ fn info(options: &Options) -> Result<ExitCode, String> {
 
             if options.verbose {
                 for (name, value, comment) in image.fits_keywords() {
-                    let comment =
-                        if comment.is_empty() { String::new() } else { format!("  / {comment}") };
-                    println!("       FITS {name:<10} {value}{comment}");
+                    let comment = if comment.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  / {}", safe(&comment))
+                    };
+                    println!("       FITS {:<10} {}{comment}", safe(&name), safe(&value));
                 }
             }
         }
@@ -264,7 +292,7 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 for property in &properties {
                     println!(
                         "       {} ({}) = {}",
-                        property.id(),
+                        safe(property.id()),
                         property.kind().name(),
                         describe(property)
                     );
@@ -286,10 +314,10 @@ fn describe(property: &xisf::PropertyRef<'_>) -> String {
     const LIMIT: usize = 80;
 
     match property.as_str() {
-        Some(text) if text.chars().count() <= LIMIT => text.to_string(),
+        Some(text) if text.chars().count() <= LIMIT => safe(text),
         Some(text) => {
             let head: String = text.chars().take(LIMIT).collect();
-            format!("{head}... ({} characters)", text.chars().count())
+            format!("{}... ({} characters)", safe(&head), text.chars().count())
         }
         None => property
             .attributes()
@@ -299,10 +327,26 @@ fn describe(property: &xisf::PropertyRef<'_>) -> String {
 }
 
 fn header(options: &Options) -> Result<ExitCode, String> {
+    // This subcommand exists to show the header exactly as the file holds it,
+    // so redirecting it to a file must reproduce those bytes and nothing else
+    // -- `xisftool header f.xisf > f.xml` is an extraction tool, and quietly
+    // rewriting the XML on its way through would make it a lying one.
+    //
+    // A terminal is the other case: there the same bytes are partly commands,
+    // and a header carrying an escape sequence would be executing it against
+    // whoever ran the tool to find out what the file contained. So the choice
+    // is made by where the output is going, which is the one thing that
+    // distinguishes the two.
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdout());
+
     for path in &options.files {
         let file = open(path)?;
         let text = file.reader().header_text().map_err(|e| format!("{}: {e}", path.display()))?;
-        println!("{text}");
+        if interactive {
+            println!("{}", safe(text));
+        } else {
+            println!("{text}");
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

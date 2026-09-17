@@ -158,6 +158,48 @@ jobs:
           time cargo +nightly miri test -p xisf-core
           time cargo +nightly miri test -p libxisf --lib
 
+  # A parser's inputs are chosen by whoever supplies the file, so the tests
+  # can only cover the hostile shapes someone thought of. This is the part
+  # that looks for the ones nobody did.
+  #
+  # Short by design: a few minutes per target on every push is a smoke test
+  # that keeps the harness building and catches the shallow regressions, not a
+  # fuzzing campaign. Finding the deeper things needs hours, which belongs in
+  # a scheduled run or OSS-Fuzz rather than in the path of a pull request.
+  #
+  # `-rss_limit_mb` is not incidental: a decoder that can be made to allocate
+  # without bound fails here as an out-of-memory rather than as a crash, and
+  # that is the whole reason the limit is set explicitly instead of left to
+  # libFuzzer's default.
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Seed the reader corpus with real files
+        run: |
+          mkdir -p fuzz/corpus/reader
+          find corpus -type f \( -name '*.xisf' -o -name '*.xisb' -o -name '*.xish' \) \
+            -exec sh -c 'cp "$1" "fuzz/corpus/reader/$(echo "$1" | tr "/" "_")"' _ {} \;
+      - name: Fuzz
+        run: |
+          for target in header reader codec blocks; do
+            echo "== $target =="
+            mkdir -p fuzz/corpus/"$target"
+            cargo +nightly fuzz run "$target" fuzz/corpus/"$target" -- \
+              -max_total_time=180 -rss_limit_mb=2048
+          done
+      - name: Keep whatever it found
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts/
+
   lint:
     runs-on: ubuntu-latest
     steps:

@@ -487,6 +487,10 @@ fits_accessor!(
 
 /// Copy pixel data into a caller-provided buffer.
 ///
+/// The block must hold exactly the pixels the geometry describes; a shorter
+/// one is `Truncated` and nothing is written, so a caller who sized its buffer
+/// from `xisf_image_data_size` never receives a partly filled one.
+///
 /// # Safety
 /// `image` as the other accessors; `buffer` must be null or writable for
 /// `size` bytes.
@@ -507,6 +511,23 @@ pub unsafe extern "C" fn xisf_image_read(
             Ok(data) => data,
             Err(e) => return XisfError::from(e.kind()) as i32,
         };
+
+        // The block must hold exactly the pixels the geometry describes, which
+        // is the same check `ImageRef::read` makes on the Rust side. A C
+        // caller sizes its buffer from `xisf_image_data_size`, so a file whose
+        // block is shorter than its geometry would otherwise be copied in
+        // full, reported as success, and leave the tail of that buffer holding
+        // whatever the allocator last put there -- uninitialised memory the
+        // caller has every reason to believe is pixel data. Refusing here
+        // turns a silent short read into the error it always was.
+        let expected = match entry.image.data_size() {
+            Some(expected) => expected,
+            None => return XisfError::Unsupported as i32,
+        };
+        if data.len() as u64 != expected {
+            return XisfError::Truncated as i32;
+        }
+
         // Checked before writing anything, so a short buffer leaves it
         // untouched rather than partly filled.
         if size < data.len() {

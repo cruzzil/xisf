@@ -280,6 +280,39 @@ fn deeply_nested_xml_is_refused_rather_than_overflowing_the_stack() {
     assert!(err.message().contains("nested"), "{}", err.message());
 }
 
+/// The element cap bounds how many nodes a header may have, not how wide they
+/// are, and an attribute is the cheaper thing to write: a handful of bytes of
+/// XML for a pair of owned strings. Without its own budget, one element is
+/// enough to turn a header into a far larger tree than the element cap allows.
+///
+/// Not run under Miri, for the same reason as its neighbour: the cap is in the
+/// millions, so exceeding it means parsing millions, and it is a resource
+/// bound rather than a memory-safety property.
+#[cfg_attr(miri, ignore)]
+#[test]
+fn an_absurd_number_of_attributes_is_refused() {
+    let mut xml = String::from(r#"<xisf version="1.0">"#);
+    // Spread across elements, so this tests the budget rather than a per-
+    // element limit -- a cap applied to each of a million elements is none.
+    for element in 0..3_000u32 {
+        xml.push_str("<a");
+        for attribute in 0..800u32 {
+            xml.push_str(&format!(" k{element}_{attribute}=\"\""));
+        }
+        xml.push_str("/>");
+    }
+    xml.push_str("</xisf>");
+
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let err = Reader::from_bytes(bytes).expect_err("2.4 million attributes were accepted");
+    assert_eq!(err.kind(), ErrorKind::BadHeader);
+    assert!(err.message().contains("attributes"), "{}", err.message());
+}
+
 /// A header that is mostly elements turns a small file into a large tree.
 /// The cap is on what the parser will build, not on what the caller asks for
 /// afterwards, because by then the memory is already committed.

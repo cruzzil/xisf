@@ -6,6 +6,9 @@ members = [
     "crates/libxisf",
     "crates/xisftool",
 ]
+# `cargo fuzz` builds this on its own, with nightly and a sanitizer. Keeping it
+# out means the stable six-platform CI never has to know it exists.
+exclude = ["fuzz"]
 
 [workspace.package]
 # Each crate carries its own version and is released on its own cadence.
@@ -16,8 +19,8 @@ repository = "https://github.com/cruzzil/xisf"
 authors = ["The xisf-rs Developers"]
 
 [workspace.dependencies]
-xisf-core = { path = "crates/xisf-core", version = "0.2.0" }
-xisf = { path = "crates/xisf", version = "0.2.0" }
+xisf-core = { path = "crates/xisf-core", version = "0.3.0" }
+xisf = { path = "crates/xisf", version = "0.3.0" }
 
 quick-xml = "0.38"
 base64 = "0.22"

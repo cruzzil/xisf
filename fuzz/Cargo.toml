@@ -1,0 +1,51 @@
+# Kept out of the workspace: `libfuzzer-sys` needs a nightly toolchain and a
+# sanitizer-instrumented build, and pulling that into the workspace would make
+# the six-platform stable CI depend on both. `cargo fuzz` builds this crate on
+# its own, which is how it is meant to be used.
+[package]
+name = "xisf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+xisf-core = { path = "../crates/xisf-core" }
+
+[[bin]]
+name = "header"
+path = "fuzz_targets/header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reader"
+path = "fuzz_targets/reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "codec"
+path = "fuzz_targets/codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "blocks"
+path = "fuzz_targets/blocks.rs"
+test = false
+doc = false
+bench = false
+
+# Debug assertions and overflow checks are the point: an arithmetic overflow
+# that wraps silently in release is a finding, not a shrug.
+[profile.release]
+debug = true
+debug-assertions = true
+overflow-checks = true

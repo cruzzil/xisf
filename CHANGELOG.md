@@ -5,6 +5,57 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
+## [0.3.0] — 2026-09-17
+
+A security release. The Rust API is unchanged; the one behaviour change is in
+the C API, described below, and is the reason this is a minor rather than a
+patch release.
+
+### Security
+
+A review of where the library trusts what a file tells it. Every item below is
+reachable from an ordinary `open`-then-read of a hostile file; none requires an
+unusual API call. There are no breaking changes to the Rust API.
+
+- **Decompression bombs in the zlib and zstd paths.** The expansion-ratio
+  check bounded the size a header *claimed*, which a hostile file simply
+  understates; nothing bounded what the decoder actually produced, and
+  `read_to_end` ran the stream to completion before the length check could
+  object. 260 KB of input allocated 256 MiB; a 4 MB block would have reached
+  several gigabytes. Both decoders now stop one byte past the declared size,
+  which is enough to detect the lie and refuse it — the same block is now
+  rejected in microseconds without the allocation. LZ4 was never affected, as
+  it decodes into a caller-sized buffer.
+- **`xisf_image_read` did not enforce the declared geometry.** The Rust API
+  requires a block to hold exactly the pixels the geometry describes; the C
+  entry point checked only that the caller's buffer was large enough. A file
+  whose block was shorter than its geometry was copied in full and reported as
+  success, leaving the tail of a buffer sized from `xisf_image_data_size`
+  holding uninitialised memory. It now returns `XISF_ERR_TRUNCATED` and writes
+  nothing.
+- **`xisftool` printed header strings to the terminal verbatim.** FITS
+  keywords, property values, element names and locators are attacker-chosen
+  text, and a terminal executes some of it: a file carrying ANSI escapes could
+  clear the screen or, through the OSC forms, reach the window title and on
+  some terminals the clipboard. Control characters are now shown as escapes.
+  The `header` subcommand still emits the exact bytes when its output is
+  redirected, since extracting the header unaltered is what it is for.
+- **Quadratic cycle detection in the block index walk.** Cycle detection used
+  a linear scan of a growing list, so a 1.6 MB file of chained index nodes
+  took 830 ms to refuse. Now a `BTreeSet`.
+- **Unbounded attribute count in the header.** The element and depth caps said
+  nothing about how wide an element could be, and an attribute is the cheaper
+  thing to write. A budget of 2,000,000 attributes across the header now
+  bounds it.
+
+### Added
+
+- A fuzzing harness (`fuzz/`) with four `cargo-fuzz` targets — `header`,
+  `reader`, `codec` and `blocks` — and a CI job that runs each briefly on every
+  push under an explicit RSS limit, so a decoder that can be made to allocate
+  without bound fails as an out-of-memory rather than passing quietly. Kept out
+  of the workspace, since it needs nightly and a sanitizer.
+
 ## [0.2.0] — 2026-09-07
 
 The first release of this implementation.
