@@ -239,6 +239,24 @@ jobs:
             cargo test -p xisf-core --no-default-features --features "$feature"
           done
 
+  # The lockfile is committed, so every other job here builds the same
+  # dependency versions every time -- which is what makes a red CI mean "this
+  # commit broke something" rather than "someone published a release". The
+  # cost is that nothing would otherwise notice when a *newer* dependency
+  # breaks us, which this job exists to catch: it updates everything first and
+  # is allowed to fail without failing the build, so the signal arrives as a
+  # warning rather than as a wall.
+  latest-deps:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Update every dependency to the newest compatible version
+        run: cargo update --verbose
+      - name: Test
+        run: cargo test --workspace
+
   # The declared rust-version is a promise to dependants, so it is checked
   # rather than asserted.
   msrv:
