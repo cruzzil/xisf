@@ -260,18 +260,19 @@ impl Reader {
             }
 
             Location::Inline { encoding } => {
-                let text = data
-                    .text
-                    .as_deref()
-                    .ok_or_else(|| err!(NotFound, "an inline block with no character data"))?;
+                // Revision 1 serializes an empty vector or matrix as an inline
+                // block with empty character data -- "the only data blocks of
+                // zero length" -- so absent text is a block of no bytes, not a
+                // block that is missing. Refusing it made every empty
+                // aggregate property unreadable.
+                let text = data.text.as_deref().unwrap_or("");
                 Ok(Cow::Owned(decode_text(text, *encoding)?))
             }
-            Location::Embedded => {
-                let text = data
-                    .text
-                    .as_deref()
-                    .ok_or_else(|| err!(NotFound, "an embedded block with no <Data> content"))?;
-                Ok(Cow::Owned(decode_text(text, TextEncoding::Base64)?))
+            Location::Embedded { encoding } => {
+                // An embedded block with no `<Data>` content is empty rather
+                // than missing, for the same reason an inline one is.
+                let text = data.text.as_deref().unwrap_or("");
+                Ok(Cow::Owned(decode_text(text, *encoding)?))
             }
 
             Location::Path { path, index } => {

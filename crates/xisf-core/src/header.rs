@@ -5,10 +5,11 @@
 //! *not* do is interpret data: a [`DataRef`] says where bytes are and what has
 //! been done to them, and resolving that is the reader's job.
 
-use quick_xml::Reader;
+use quick_xml::NsReader;
 use quick_xml::events::Event;
+use quick_xml::name::ResolveResult;
 
-use crate::block::{ByteOrder, Checksum, Compression, Location};
+use crate::block::{ByteOrder, Checksum, Compression, Location, TextEncoding};
 use crate::err;
 use crate::error::Result;
 
@@ -28,6 +29,10 @@ pub struct DataRef {
     /// Character data, for `inline` and `embedded` blocks. Held as written;
     /// whitespace is insignificant in both encodings and is stripped on use.
     pub text: Option<String>,
+    /// The `encoding` attribute of a `<Data>` element, which only that
+    /// element carries. It is promoted onto the surrounding element's
+    /// `Embedded` location once the parser has seen both.
+    pub encoding: Option<TextEncoding>,
 }
 
 /// One element of the header, flattened to what the engine needs.
@@ -39,6 +44,15 @@ pub struct DataRef {
 pub struct Element {
     /// The local name, with any namespace prefix removed.
     pub name: String,
+    /// The namespace URI this element was resolved in, or `None` when the
+    /// document bound no namespace to it.
+    ///
+    /// Kept because the local name alone does not say whether an element is
+    /// part of the format. Revision 1 requires extension elements to live in
+    /// a namespace other than XISF's, so a header may legitimately carry an
+    /// `<ext:Image>` that means nothing to a decoder -- and reading it as a
+    /// core `<Image>` would invent an image the file does not contain.
+    pub namespace: Option<String>,
     /// Attributes in document order.
     pub attributes: Vec<(String, String)>,
     /// Where this element's data block is, if it has one.
@@ -47,6 +61,25 @@ pub struct Element {
 }
 
 impl Element {
+    /// Whether this element belongs to the format rather than to an extension.
+    ///
+    /// An element with no namespace counts: the specification's own examples
+    /// and much real-world output declare no default namespace, and refusing
+    /// those would reject files every other decoder reads. What is excluded
+    /// is an element explicitly placed in *another* namespace, which
+    /// Revision 1 defines as an extension and requires decoders to ignore.
+    pub fn is_core(&self) -> bool {
+        match &self.namespace {
+            None => true,
+            Some(uri) => uri == XISF_NAMESPACE,
+        }
+    }
+
+    /// Whether this is the named core element.
+    pub fn is(&self, name: &str) -> bool {
+        self.name == name && self.is_core()
+    }
+
     /// An attribute's value, if present.
     pub fn attr(&self, name: &str) -> Option<&str> {
         self.attributes.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
@@ -54,7 +87,7 @@ impl Element {
 
     /// Direct children with a given element name.
     pub fn children_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a Element> + 'a {
-        self.children.iter().filter(move |c| c.name == name)
+        self.children.iter().filter(move |c| c.is(name))
     }
 
     /// Every element in this subtree, this one first.
@@ -87,14 +120,14 @@ pub struct Header {
 impl Header {
     /// Every `<Image>` in the header, in document order.
     pub fn images(&self) -> Vec<&Element> {
-        self.root.descendants().into_iter().filter(|e| e.name == "Image").collect()
+        self.root.descendants().into_iter().filter(|e| e.is("Image")).collect()
     }
 }
 
 impl Header {
     /// The element with a given `uid`, if the header defines one.
     pub fn by_uid(&self, uid: &str) -> Option<&Element> {
-        self.root.descendants().into_iter().find(|e| e.attr("uid") == Some(uid))
+        self.root.descendants().into_iter().find(|e| e.is_core() && e.attr("uid") == Some(uid))
     }
 
     /// Every element of `name` associated with `owner`, following references.
@@ -115,7 +148,7 @@ impl Header {
         for reference in owner.children_named("Reference") {
             let Some(uid) = reference.attr("ref") else { continue };
             if let Some(target) = self.by_uid(uid)
-                && target.name == name
+                && target.is(name)
             {
                 out.push(target);
             }
@@ -156,7 +189,7 @@ const MAX_ELEMENTS: usize = 1_000_000;
 const MAX_ATTRIBUTES: usize = 2_000_000;
 
 pub fn parse(xml: &str) -> Result<Header> {
-    let mut reader = Reader::from_str(xml);
+    let mut reader = NsReader::from_str(xml);
     let config = reader.config_mut();
     config.trim_text(false);
     config.expand_empty_elements = false;
@@ -168,13 +201,18 @@ pub fn parse(xml: &str) -> Result<Header> {
     let mut attributes = 0usize;
 
     loop {
-        match reader.read_event() {
+        // Resolved rather than raw, so a prefix is turned into the namespace
+        // it is bound to. A prefix on its own means nothing -- the same
+        // document may bind `ext:` to the XISF namespace and the default
+        // namespace to something else -- so only the resolved URI can say
+        // whether an element is part of the format.
+        match reader.read_resolved_event() {
             Err(e) => {
                 return Err(err!(BadHeader, "at position {}: {e}", reader.buffer_position()));
             }
-            Ok(Event::Eof) => break,
+            Ok((_, Event::Eof)) => break,
 
-            Ok(Event::Start(start)) => {
+            Ok((ns, Event::Start(start))) => {
                 count(&mut elements)?;
                 if stack.len() >= MAX_DEPTH {
                     return Err(err!(
@@ -182,21 +220,23 @@ pub fn parse(xml: &str) -> Result<Header> {
                         "the header is nested more than {MAX_DEPTH} elements deep"
                     ));
                 }
-                stack.push(element_from(&start, &mut attributes)?);
+                let namespace = namespace_of(&ns)?;
+                stack.push(element_from(&start, namespace, &mut attributes)?);
             }
-            Ok(Event::Empty(start)) => {
+            Ok((ns, Event::Empty(start))) => {
                 count(&mut elements)?;
-                let element = element_from(&start, &mut attributes)?;
+                let namespace = namespace_of(&ns)?;
+                let element = element_from(&start, namespace, &mut attributes)?;
                 finish(element, &mut stack, &mut root)?;
             }
-            Ok(Event::End(_)) => {
+            Ok((_, Event::End(_))) => {
                 let element = stack
                     .pop()
                     .ok_or_else(|| err!(BadHeader, "a closing tag with nothing open"))?;
                 finish(element, &mut stack, &mut root)?;
             }
 
-            Ok(Event::Text(text)) => {
+            Ok((_, Event::Text(text))) => {
                 // `decode` converts bytes to text; it does *not* resolve
                 // entities. Without unescaping, `&amp;` and `&lt;` are
                 // silently dropped rather than becoming `&` and `<`, which
@@ -206,7 +246,7 @@ pub fn parse(xml: &str) -> Result<Header> {
             }
             // Base64 and hex blocks are sometimes wrapped in CDATA; the
             // content means the same thing either way.
-            Ok(Event::CData(data)) => {
+            Ok((_, Event::CData(data))) => {
                 let decoded = String::from_utf8(data.to_vec())
                     .map_err(|e| err!(BadHeader, "CDATA is not UTF-8: {e}"))?;
                 push_text(&mut stack, &decoded);
@@ -216,7 +256,7 @@ pub fn parse(xml: &str) -> Result<Header> {
             // Left to the catch-all below it would be dropped silently, so
             // `a &amp; b` would read back as `a  b` -- data loss that looks
             // like nothing at all went wrong.
-            Ok(Event::GeneralRef(reference)) => {
+            Ok((_, Event::GeneralRef(reference))) => {
                 let raw = core::str::from_utf8(&reference)
                     .map_err(|e| err!(BadHeader, "entity reference: {e}"))?;
                 let resolved = resolve_entity(raw)
@@ -233,8 +273,13 @@ pub fn parse(xml: &str) -> Result<Header> {
         return Err(err!(BadHeader, "{} element(s) were never closed", stack.len()));
     }
     let root = root.ok_or_else(|| err!(BadHeader, "the header has no elements"))?;
-    if root.name != "xisf" {
-        return Err(err!(BadHeader, "the root element is <{}>, expected <xisf>", root.name));
+    if !root.is("xisf") {
+        return Err(err!(
+            BadHeader,
+            "the root element is <{}> in namespace {:?}, expected <xisf>",
+            root.name,
+            root.namespace.as_deref().unwrap_or("(none)")
+        ));
     }
     let version = root.attr("version").unwrap_or_default().to_string();
     if version != "1.0" {
@@ -242,6 +287,26 @@ pub fn parse(xml: &str) -> Result<Header> {
     }
 
     Ok(Header { version, root })
+}
+
+/// The namespace URI a resolved event belongs to, if any.
+///
+/// An unbound prefix is a malformed document rather than an extension: the
+/// writer of `<ext:Image>` without an `xmlns:ext` declaration meant
+/// *something*, and guessing which namespace would be inventing content.
+fn namespace_of(resolved: &ResolveResult<'_>) -> Result<Option<String>> {
+    Ok(match resolved {
+        ResolveResult::Unbound => None,
+        ResolveResult::Bound(ns) => Some(
+            core::str::from_utf8(ns.as_ref())
+                .map_err(|e| err!(BadHeader, "a namespace URI is not UTF-8: {e}"))?
+                .to_string(),
+        ),
+        ResolveResult::Unknown(prefix) => {
+            let prefix = String::from_utf8_lossy(prefix);
+            return Err(err!(BadHeader, "the namespace prefix {prefix:?} is not declared"));
+        }
+    })
 }
 
 /// Resolve the five entities XML predefines, and numeric character
@@ -295,9 +360,15 @@ fn count(elements: &mut usize) -> Result<()> {
 fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -> Result<()> {
     match stack.last_mut() {
         Some(parent) => {
-            // An `<Data>` child is not an element in its own right: it exists
-            // to carry an embedded block's text for the element around it.
-            if element.name == "Data" {
+            // A `<Data>` child is not an element in its own right: it exists
+            // to carry an embedded block for the element around it, and the
+            // schema gives it its own encoding, compression, subblocks and
+            // checksum attributes. All of them describe the parent's block,
+            // so all of them are promoted -- dropping the checksum in
+            // particular meant a block that recorded how to detect tampering
+            // was handed over unverified, which is worse than recording
+            // nothing at all.
+            if element.is("Data") {
                 // The parent may already hold the indentation that preceded
                 // this child, which is not content and must not block the
                 // promotion.
@@ -306,6 +377,17 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
                 }
                 if parent.data.location.is_none() {
                     parent.data.location = element.data.location.clone();
+                }
+                if let Some(encoding) = element.data.encoding
+                    && let Some(Location::Embedded { encoding: slot }) = &mut parent.data.location
+                {
+                    *slot = encoding;
+                }
+                if parent.data.compression.is_none() {
+                    parent.data.compression = element.data.compression.clone();
+                }
+                if parent.data.checksum.is_none() {
+                    parent.data.checksum = element.data.checksum.clone();
                 }
             }
             parent.children.push(element);
@@ -320,7 +402,11 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
     Ok(())
 }
 
-fn element_from(start: &quick_xml::events::BytesStart<'_>, budget: &mut usize) -> Result<Element> {
+fn element_from(
+    start: &quick_xml::events::BytesStart<'_>,
+    namespace: Option<String>,
+    budget: &mut usize,
+) -> Result<Element> {
     let qname = start.name();
     let raw = core::str::from_utf8(qname.as_ref())
         .map_err(|e| err!(BadHeader, "an element name is not UTF-8: {e}"))?;
@@ -358,6 +444,18 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>, budget: &mut usize) -
             "subblocks" => subblocks = Some(Compression::parse_subblocks(&value)?),
             "checksum" => data.checksum = Some(Checksum::parse(&value)?),
             "byteOrder" => data.byte_order = ByteOrder::parse(&value)?,
+            "encoding" => {
+                data.encoding = Some(match value.as_str() {
+                    "base64" => TextEncoding::Base64,
+                    "hex" => TextEncoding::Hex,
+                    other => {
+                        return Err(err!(
+                            BadAttribute,
+                            "a <Data> encoding must be base64 or hex, got {other:?}"
+                        ));
+                    }
+                });
+            }
             _ => {}
         }
         attributes.push((key, value));
@@ -378,7 +476,7 @@ fn element_from(start: &quick_xml::events::BytesStart<'_>, budget: &mut usize) -
         }
     }
 
-    Ok(Element { name, attributes, data, children: Vec::new() })
+    Ok(Element { name, namespace, attributes, data, children: Vec::new() })
 }
 
 #[cfg(test)]
@@ -412,7 +510,10 @@ mod tests {
             <Data encoding="base64">QUJD</Data></Image></xisf>"#;
         let header = parse(xml).unwrap();
         let image = header.images()[0];
-        assert_eq!(image.data.location, Some(Location::Embedded));
+        assert_eq!(
+            image.data.location,
+            Some(Location::Embedded { encoding: crate::block::TextEncoding::Base64 })
+        );
         assert_eq!(image.data.text.as_deref(), Some("QUJD"));
     }
 

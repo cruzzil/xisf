@@ -178,7 +178,7 @@ fn info(options: &Options) -> Result<ExitCode, String> {
                 Some(Location::Attachment { position, size }) => {
                     format!("attached at {position}, {size} bytes")
                 }
-                Some(Location::Embedded) => "embedded".to_string(),
+                Some(Location::Embedded { encoding }) => format!("embedded, {encoding:?}"),
                 Some(Location::Inline { encoding }) => format!("inline, {encoding:?}"),
                 Some(Location::Path { path, .. }) => format!("external file {}", safe(path)),
                 Some(Location::Url { url, .. }) => format!("external URL {}", safe(url)),

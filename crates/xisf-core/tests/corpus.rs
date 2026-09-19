@@ -28,7 +28,10 @@ fn reads_an_embedded_base64_image() {
     assert_eq!(image.attr("geometry"), Some("10:10:3"));
     assert_eq!(image.attr("sampleFormat"), Some("UInt8"));
     assert_eq!(image.attr("colorSpace"), Some("RGB"));
-    assert_eq!(image.data.location, Some(Location::Embedded));
+    assert_eq!(
+        image.data.location,
+        Some(Location::Embedded { encoding: xisf_core::block::TextEncoding::Base64 })
+    );
 
     // 10 x 10 pixels, 3 channels, one byte per sample.
     let data = reader.block(&image.data).expect("block");

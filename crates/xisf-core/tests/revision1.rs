@@ -1,0 +1,161 @@
+//! Conformance with Revision 1 of the XISF 1.0 specification.
+//!
+//! Revision 1 (version 1.01, September 2026) does not change the format
+//! version: "Every XISF unit valid under the original document remains valid
+//! under this revision." What it does is settle a number of things the
+//! original left implicit, and each of those is a place where an
+//! implementation written against the original text can be quietly wrong.
+//! These tests pin the ones that were.
+
+use xisf_core::block::{Location, TextEncoding};
+use xisf_core::{ErrorKind, Reader};
+
+fn unit(body: &str) -> Vec<u8> {
+    let xml = format!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/>{body}</xisf>"#
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    bytes
+}
+
+fn by_id<'a>(reader: &'a Reader, id: &str) -> &'a xisf_core::header::Element {
+    reader
+        .header()
+        .root
+        .descendants()
+        .into_iter()
+        .find(|e| e.attr("id") == Some(id))
+        .expect("no element with that id")
+}
+
+/// "The values of empty vector and matrix properties are serialized as inline
+/// data blocks with empty character data contents, the only data blocks of
+/// zero length." An inline block with no character data is therefore a block
+/// of no bytes, not a block that is missing.
+#[test]
+fn an_empty_inline_block_is_a_block_of_no_bytes() {
+    let reader = Reader::from_bytes(unit(
+        r#"<Property id="Empty" type="F32Vector" length="0" location="inline:base64"/>"#,
+    ))
+    .expect("header");
+    let block = reader.block(&by_id(&reader, "Empty").data).expect("an empty block is legal");
+    assert!(block.is_empty(), "expected zero bytes, got {}", block.len());
+}
+
+/// The schema makes `encoding` a required attribute of `<Data>` and allows
+/// `hex` as well as `base64`. Assuming base64 turns a legal hex block into a
+/// decoding error.
+#[test]
+fn an_embedded_block_is_decoded_with_the_encoding_data_declares() {
+    for (encoding, text) in [("base64", "QUJD"), ("hex", "414243")] {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Property id="S" type="String" location="embedded"><Data encoding="{encoding}">{text}</Data></Property>"#
+        )))
+        .expect("header");
+        let block =
+            reader.block(&by_id(&reader, "S").data).unwrap_or_else(|e| panic!("{encoding}: {e}"));
+        assert_eq!(&*block, b"ABC", "{encoding} decoded wrongly");
+    }
+}
+
+/// `<Data>` carries its own checksum, and it covers the parent's block. A
+/// decoder that drops it hands over unverified bytes while the file went to
+/// the trouble of saying how to detect tampering.
+#[test]
+fn a_checksum_on_the_data_element_is_honoured() {
+    // A deliberately wrong SHA-1 over "ABC".
+    let wrong = "0000000000000000000000000000000000000000";
+    let reader = Reader::from_bytes(unit(&format!(
+        r#"<Property id="S" type="String" location="embedded"><Data encoding="base64" checksum="sha-1:{wrong}">QUJD</Data></Property>"#
+    )))
+    .expect("header");
+
+    let data = &by_id(&reader, "S").data;
+    assert!(data.checksum.is_some(), "the <Data> checksum was dropped on the floor");
+    let err = reader.block(data).expect_err("a wrong checksum was accepted");
+    assert_eq!(err.kind(), ErrorKind::ChecksumMismatch);
+}
+
+/// A `<Data>` element's compression describes the parent's block too.
+#[test]
+fn compression_on_the_data_element_is_honoured() {
+    let reader = Reader::from_bytes(unit(
+        r#"<Property id="S" type="String" location="embedded"><Data encoding="base64" compression="zlib:3">eJxzdHIGAAGNAMc=</Data></Property>"#,
+    ))
+    .expect("header");
+    let data = &by_id(&reader, "S").data;
+    assert!(data.compression.is_some(), "the <Data> compression was dropped");
+    assert_eq!(&*reader.block(data).expect("decompress"), b"ABC");
+}
+
+/// "Child elements of the XISF root element not defined by this specification
+/// should belong to an XML namespace other than the XISF namespace."
+///
+/// Matching on the local name alone reads such an element as the core element
+/// it happens to be named after -- inventing an image the file does not
+/// contain, with whatever geometry the extension chose.
+#[test]
+fn an_extension_element_is_not_mistaken_for_the_core_element_it_is_named_after() {
+    let reader = Reader::from_bytes(unit(
+        r#"<ext:Image xmlns:ext="http://example.com/notxisf" geometry="9999:9999:3" sampleFormat="Float64"/>"#,
+    ))
+    .expect("header");
+    assert_eq!(reader.header().images().len(), 0, "an extension element was read as an Image");
+}
+
+/// The same name in the XISF namespace, however, is the core element, whether
+/// it is reached through the default namespace or through a prefix bound to
+/// the same URI.
+#[test]
+fn a_prefixed_core_element_is_still_a_core_element() {
+    let xml = r#"<x:xisf version="1.0" xmlns:x="http://www.pixinsight.com/xisf"><x:Metadata/><x:Image geometry="2:2:1" sampleFormat="UInt8" location="attachment:100:4"/></x:xisf>"#;
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    let reader = Reader::from_bytes(bytes).expect("header");
+    assert_eq!(reader.header().images().len(), 1, "a prefixed core Image was not found");
+}
+
+/// A header that declares no namespace at all is still read. The
+/// specification's own examples are written that way, and so is a good deal
+/// of real output; refusing them would reject files every other decoder
+/// accepts.
+#[test]
+fn a_header_with_no_namespace_is_still_read() {
+    let xml = r#"<xisf version="1.0"><Metadata/><Image geometry="2:2:1" sampleFormat="UInt8" location="attachment:100:4"/></xisf>"#;
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    let reader = Reader::from_bytes(bytes).expect("header");
+    assert_eq!(reader.header().images().len(), 1);
+}
+
+/// An undeclared prefix is a malformed document, not an extension: whoever
+/// wrote it meant some namespace, and guessing which would invent content.
+#[test]
+fn an_undeclared_namespace_prefix_is_refused() {
+    let xml = r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><nope:Thing/></xisf>"#;
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    assert_eq!(Reader::from_bytes(bytes).unwrap_err().kind(), ErrorKind::BadHeader);
+}
+
+/// The embedded location records which encoding its `<Data>` used.
+#[test]
+fn the_embedded_location_carries_its_encoding() {
+    let reader = Reader::from_bytes(unit(
+        r#"<Property id="S" type="String" location="embedded"><Data encoding="hex">414243</Data></Property>"#,
+    ))
+    .expect("header");
+    assert_eq!(
+        by_id(&reader, "S").data.location,
+        Some(Location::Embedded { encoding: TextEncoding::Hex })
+    );
+}

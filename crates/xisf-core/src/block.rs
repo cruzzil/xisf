@@ -20,12 +20,17 @@ use crate::error::{ErrorKind, Result};
 pub enum Location {
     /// In the element's own character data, text-encoded.
     Inline { encoding: TextEncoding },
-    /// In a child `<Data>` element, base64-encoded.
+    /// In a child `<Data>` element.
     ///
     /// The spec gives this its own form rather than folding it into `inline`
     /// because an element that may have child elements cannot also carry
     /// character data unambiguously.
-    Embedded,
+    ///
+    /// The encoding is the `<Data>` element's own `encoding` attribute, which
+    /// the schema makes required and which may be `hex` as well as `base64`.
+    /// It is carried here rather than assumed, because assuming base64 turns
+    /// a legal hex block into a decoding error.
+    Embedded { encoding: TextEncoding },
     /// A byte range of this file, after the header.
     Attachment { position: u64, size: u64 },
     /// Another file, named by a path relative to this one.
@@ -78,7 +83,10 @@ impl Location {
         };
 
         match scheme {
-            "embedded" => Ok(Location::Embedded),
+            // The encoding lives on the child `<Data>` element, which the
+            // parser fills in once it reaches it; base64 is the default for
+            // a file that omits the attribute the schema requires.
+            "embedded" => Ok(Location::Embedded { encoding: TextEncoding::Base64 }),
             "inline" => {
                 let encoding = match rest {
                     Some("base64") => TextEncoding::Base64,
@@ -440,7 +448,10 @@ mod tests {
             Location::parse("inline:hex").unwrap(),
             Location::Inline { encoding: TextEncoding::Hex }
         );
-        assert_eq!(Location::parse("embedded").unwrap(), Location::Embedded);
+        assert_eq!(
+            Location::parse("embedded").unwrap(),
+            Location::Embedded { encoding: TextEncoding::Base64 }
+        );
         assert_eq!(
             Location::parse("attachment:9869:23042").unwrap(),
             Location::Attachment { position: 9869, size: 23042 }
