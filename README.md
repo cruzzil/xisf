@@ -88,8 +88,12 @@ Plus a C conformance harness compiling real C against the header with
 `-Werror`, Miri over the FFI layer, benchmarks, and CI on six platforms: Linux,
 macOS and Windows, each on x86-64 and aarch64.
 
-The specification references an XSD schema; it is unpublished (404 at the URL
-every XISF file names), so it cannot be used as a gate. See `docs/PLAN.md`.
+Headers are also validated against the official XML Schema, which Revision 1
+of the specification publishes. It is fetched rather than kept here: the file
+is all-rights-reserved with no redistribution grant, so `scripts/fetch-xsd.sh`
+downloads it into a gitignored directory and `scripts/validate-headers.sh`
+runs the check. CI validates both the corpus and a file this writer produced,
+so the schema gates what we emit as well as what we can read.
 
 ## Documentation
 

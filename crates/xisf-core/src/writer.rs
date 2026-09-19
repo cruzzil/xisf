@@ -695,6 +695,38 @@ impl Writer {
                 None => escape_attr(&now_iso8601()),
             }
         ));
+        // "If the XISF unit contains data blocks with checksums / compressed
+        // data blocks, this property should be defined to enumerate the
+        // applied hashing algorithms / compression codec(s)." They are derived
+        // from what was actually written rather than from what the caller
+        // asked for, so they cannot disagree with the blocks they describe.
+        let mut algorithms: Vec<&str> = Vec::new();
+        let mut codecs: Vec<&str> = Vec::new();
+        for block in &stored.blocks {
+            if let Some(checksum) = &block.checksum
+                && !algorithms.contains(&checksum.algorithm.name())
+            {
+                algorithms.push(checksum.algorithm.name());
+            }
+            if let Some(compression) = &block.compression
+                && !codecs.contains(&compression.codec.name())
+            {
+                codecs.push(compression.codec.name());
+            }
+        }
+        if !algorithms.is_empty() {
+            xml.push_str(&format!(
+                "<Property id=\"XISF:ChecksumAlgorithms\" type=\"String\">{}</Property>",
+                escape_text(&algorithms.join(","))
+            ));
+        }
+        if !codecs.is_empty() {
+            xml.push_str(&format!(
+                "<Property id=\"XISF:CompressionCodecs\" type=\"String\">{}</Property>",
+                escape_text(&codecs.join(","))
+            ));
+        }
+
         for (id, kind, value) in &self.metadata {
             xml.push_str(&format!(
                 "<Property id=\"{}\" type=\"{}\">{}</Property>",

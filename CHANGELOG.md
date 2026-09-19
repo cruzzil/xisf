@@ -5,6 +5,94 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
+## [Unreleased]
+
+Brings the implementation up to Revision 1 of the XISF 1.0 specification
+(version 1.01, September 2026). The format version is unchanged and Revision 1
+guarantees that "every XISF unit valid under the original document remains
+valid", so no file stops being readable. There are breaking changes to the
+Rust API, listed at the end.
+
+### Fixed
+
+Four misreadings of the original specification, found while going through the
+revision. None depends on it; the revision is what made them visible.
+
+- **Element names were matched without their namespace.** Revision 1 requires
+  extension elements to live in a namespace other than XISF's, so a header may
+  carry an `<ext:Image>` that means nothing to a decoder — and taking the
+  local name alone read it as a core `<Image>`, inventing an image the file
+  does not contain. A document that declares no namespace is still read as
+  XISF, since the specification's own examples are written that way. An
+  undeclared prefix is now an error rather than a guess.
+- **An inline block with no character data was refused as missing.** Revision
+  1 serializes empty vectors and matrices exactly that way — "the only data
+  blocks of zero length" — so every empty aggregate property was unreadable.
+- **The `encoding` attribute of a `<Data>` element was ignored** and base64
+  assumed, turning a legal hex block into a decoding error.
+- **A `<Data>` element's own `compression` and `checksum` were dropped.** The
+  checksum is the serious one: a block that recorded how to detect tampering
+  was handed over unverified, and a deliberately wrong digest passed without a
+  word.
+
+### Changed
+
+- **Zstandard and the checksum hashes are no longer optional.** Revision 1
+  makes `zstd` and `zstd+sh` standard codecs and requires conforming decoders
+  to support them and to verify SHA-1, SHA-256 and SHA-512. A build with those
+  off cannot claim conformance, so the `zstd` and `checksums` features are
+  gone and their dependencies are unconditional. `zlib` and `lz4` remain
+  optional, which the specification allows.
+- **Zstandard can now be written**, not only read, via `zrip` — pure Rust, so
+  the workspace still needs no C toolchain. `ruzstd` keeps the decoding job,
+  since that is the side facing hostile files and it has far more use behind
+  it. `Codec2::Zstd` is the writer's default, Revision 1 having made
+  Zstandard the recommended codec.
+- **The decompression-bomb ceiling is now per codec.** One ceiling of 2048,
+  chosen for DEFLATE, would have rejected legitimate Zstandard blocks: eight
+  megabytes of zeroes compress to 781 bytes, 10741:1, and an all-zero
+  calibration frame is an ordinary thing to find in an astronomical image.
+  This also tightens LZ4 from 2048 to 512.
+- **RGB working space luminance coefficients are derived, not given.**
+  Revision 1 makes them follow from the chromaticities and the D50 reference
+  white; encoders "shall" compute them that way. The writer does, and refuses
+  degenerate primaries. `RgbWorkingSpace::new` derives them, and `srgb()` now
+  derives its own rather than carrying copied literals.
+- **`imageType` is an enumeration** rather than an opaque string, including
+  the `SlopeMap` and `WeightMap` values, with an `Other` variant so an
+  unrecognized value costs nothing.
+- **Image ids must be unique within a unit.** The writer refuses duplicates;
+  the reader reports them through `Header::duplicate_image_ids`.
+- The writer emits `XISF:ChecksumAlgorithms` and `XISF:CompressionCodecs`,
+  derived from the blocks it actually wrote.
+
+### Added
+
+- **`xisf_core::astrometry`**: the `AstrometricSolution` namespace, modelled
+  with its four layers and the availability rules that govern them — an
+  unknown projection system costs the whole solution, an unknown basis
+  function or term kind costs only the distortion model, an unknown celestial
+  reference system costs nothing, and an unsupported major revision means
+  interpreting none of it. It models and validates a solution; it does not
+  evaluate one. See the module documentation for why.
+- **Schema validation.** `scripts/fetch-xsd.sh` downloads the official XML
+  Schema that Revision 1 publishes, and `scripts/validate-headers.sh` checks
+  headers against it. The schema is fetched rather than vendored: it is
+  all-rights-reserved with no redistribution grant, so `/schema/` is
+  gitignored. CI validates both the corpus and a file this writer produced.
+- `RgbWorkingSpace::derive_luminance`, `luminance_is_consistent`, and the
+  `D50_WHITE` constant.
+
+### Breaking
+
+- `header::Element` gains a `namespace` field, and core-element lookups
+  require it.
+- `block::Location::Embedded` is now `Embedded { encoding }`.
+- `image::Image::image_type` is `Option<ImageType>` rather than
+  `Option<String>`.
+- The `zstd` and `checksums` cargo features are removed; both are always on.
+- `writer::Codec2` gains a `Zstd` variant and now implements `Default`.
+
 ## [0.3.0] — 2026-09-17
 
 A security release. The Rust API is unchanged; the one behaviour change is in

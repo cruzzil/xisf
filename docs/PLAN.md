@@ -23,10 +23,16 @@ Section 4 of the spec is unambiguous, and is what makes this project possible:
 > availability or impose a monetary cost for its availability or its use.
 > These conditions shall constitute a legally binding assignment.
 
-Everything here is written from that document. It references an XSD schema at
-`http://pixinsight.com/xisf/xisf-1.0.xsd`, which would be part of the same
-definition -- but that URL returns 404, so the specification prose is the only
-normative source actually available.
+Everything here is written from that document, now at Revision 1 (version
+1.01, September 2026). It references an XSD schema at
+`http://pixinsight.com/xisf/xisf-1.0.xsd`, which was unpublished when this
+plan was written and returned 404. Revision 1 publishes it, and it is now used
+as a gate -- see the validation section below.
+
+Note that the schema carries its own copyright notice, "All rights reserved",
+with no redistribution grant, unlike the specification document itself, whose
+Copyright Information section explicitly permits copying and derivative works.
+That is why the schema is fetched rather than vendored.
 
 ### libXISF is GPL-3.0, and is not a C ABI anyway
 
@@ -193,12 +199,19 @@ The hardest lesson from the ASDF work: a green test suite proved very little
 until it was checked against oracles someone else wrote. Four are available
 here, and none of them requires deriving from restricted source.
 
-1. ~~**The official XSD schema**~~ -- **not available.** This plan called it
-   the strongest gate. It does not exist: `xisf-1.0.xsd` returns 404 at every
-   location tried, including `http://pixinsight.com/xisf/xisf-1.0.xsd`, which
-   is the exact URL every XISF file's own `xsi:schemaLocation` names -- the
-   files in `corpus/pixinsight/` included. The schema is referenced by the
-   format and is not published, so there is nothing to validate against.
+1. **The official XSD schema** -- **now available, and in use.** This plan
+   called it the strongest gate. It was a 404 at every location tried when
+   this was written, including `http://pixinsight.com/xisf/xisf-1.0.xsd`, the
+   exact URL every XISF file's own `xsi:schemaLocation` names. Revision 1
+   publishes it at that address.
+
+   `scripts/fetch-xsd.sh` downloads it and `scripts/validate-headers.sh`
+   validates against it; `/schema/` is gitignored because the file is
+   all-rights-reserved. CI checks the corpus and a header this writer produced,
+   so it gates both directions. Item 3 below remains valuable for the same
+   reason it always was: a schema checks that a header is *shaped* right, and
+   another implementation reading the file checks that it *means* the right
+   thing.
 
    Its replacement is item 3, and is arguably better: a schema checks that a
    header is *shaped* right, while another implementation reading the file
@@ -260,7 +273,7 @@ Plus, carried over from the ASDF project because they earned their place:
 3. **Properties and images** — the type system, geometry, sample formats,
    colour spaces. Gate: full value-level comparison against the samples.
 4. **`xisf-core` writing** — header emit, block layout, checksums, compression.
-   Gate: libXISF reads what we write (the XSD is unpublished; see above).
+   Gate: libXISF reads what we write, and the official XSD validates it.
 5. ~~**`xisf`** — the idiomatic API, with benchmarks alongside.~~ Done; see
    `docs/PERFORMANCE.md`.
 6. ~~**`xisf-c`**~~ — done, and named `libxisf` at the user's request. Its own
