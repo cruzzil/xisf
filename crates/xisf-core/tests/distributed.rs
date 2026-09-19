@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use xisf_core::distributed::PendingBlock;
 use xisf_core::distributed::{parse_blocks_file, write_blocks_file};
 use xisf_core::{ErrorKind, Reader};
 
@@ -51,8 +52,11 @@ sampleFormat="UInt16" colorSpace="Gray" location="{block}"/></xisf>"#
 
 /// A header file that is not monolithic, addressing a block in a `.xisb`.
 fn write_unit(scratch: &Scratch, blocks: &[(u64, Vec<u8>)], locator: &str) -> PathBuf {
-    std::fs::write(scratch.join("data.xisb"), write_blocks_file(blocks).expect("blocks file"))
-        .expect("write blocks");
+    std::fs::write(
+        scratch.join("data.xisb"),
+        write_blocks_file(&plain_blocks(blocks)).expect("blocks file"),
+    )
+    .expect("write blocks");
 
     // The reader resolves `path:` relative to the file it came from, so the
     // header has to be a real file on disk beside the blocks.
@@ -84,7 +88,8 @@ fn a_block_is_read_out_of_a_data_blocks_file_by_identifier() {
     // Three blocks, with the wanted one neither first nor last, so an
     // implementation that ignored the identifier would pick the wrong bytes.
     let blocks = vec![(1u64, vec![0xAA; 16]), (7u64, data.clone()), (9u64, vec![0xBB; 8])];
-    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&blocks).unwrap()).unwrap();
+    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&plain_blocks(&blocks)).unwrap())
+        .unwrap();
 
     let path = monolithic_naming(&scratch, "path(data.xisb):7");
     let reader = Reader::open(&path).expect("open");
@@ -99,8 +104,11 @@ fn a_block_is_read_out_of_a_data_blocks_file_by_identifier() {
 #[test]
 fn a_blocks_file_must_be_addressed_by_identifier() {
     let scratch = Scratch::new("no-id");
-    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&[(1, pixels())]).unwrap())
-        .unwrap();
+    std::fs::write(
+        scratch.join("data.xisb"),
+        write_blocks_file(&plain_blocks(&[(1, pixels())])).unwrap(),
+    )
+    .unwrap();
 
     let path = monolithic_naming(&scratch, "path(data.xisb)");
     let reader = Reader::open(&path).expect("open");
@@ -137,8 +145,11 @@ fn a_plain_file_may_not_be_addressed_by_identifier() {
 #[test]
 fn an_unknown_identifier_is_reported() {
     let scratch = Scratch::new("unknown-id");
-    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&[(1, pixels())]).unwrap())
-        .unwrap();
+    std::fs::write(
+        scratch.join("data.xisb"),
+        write_blocks_file(&plain_blocks(&[(1, pixels())])).unwrap(),
+    )
+    .unwrap();
 
     let path = monolithic_naming(&scratch, "path(data.xisb):42");
     let reader = Reader::open(&path).expect("open");
@@ -169,7 +180,7 @@ fn a_header_file_parses_and_names_its_blocks() {
 fn index_positions_address_the_blocks_they_name() {
     let blocks: Vec<(u64, Vec<u8>)> =
         (0..5u64).map(|i| (i * 3 + 1, vec![i as u8; (i as usize + 1) * 10])).collect();
-    let bytes = write_blocks_file(&blocks).expect("write");
+    let bytes = write_blocks_file(&plain_blocks(&blocks)).expect("write");
     let index = parse_blocks_file(&bytes).expect("parse");
 
     assert_eq!(index.elements.len(), blocks.len());
@@ -330,7 +341,8 @@ fn a_header_file_opens_without_being_wrapped() {
     let scratch = Scratch::new("xish-open");
     let data = pixels();
     let blocks = vec![(1u64, data.clone())];
-    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&blocks).unwrap()).unwrap();
+    std::fs::write(scratch.join("data.xisb"), write_blocks_file(&plain_blocks(&blocks)).unwrap())
+        .unwrap();
 
     let path = scratch.join("unit.xish");
     std::fs::write(&path, header_naming("path(data.xisb):0x1")).unwrap();
@@ -424,4 +436,17 @@ fn the_header_dir_token_cannot_be_used_to_climb_out() {
         let image = reader.header().images()[0];
         assert!(reader.block(&image.data).is_err(), "{locator} was followed");
     }
+}
+
+/// Blocks stored as they are, which is what these tests care about; the
+/// uncompressed length only matters for a block that was compressed.
+fn plain_blocks(blocks: &[(u64, Vec<u8>)]) -> Vec<PendingBlock> {
+    blocks
+        .iter()
+        .map(|(id, bytes)| PendingBlock {
+            id: *id,
+            bytes: bytes.clone(),
+            uncompressed_length: None,
+        })
+        .collect()
 }

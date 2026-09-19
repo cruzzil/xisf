@@ -459,6 +459,16 @@ impl<'a> ThumbnailRef<'a> {
         self.image.color_space
     }
 
+    /// How the thumbnail's samples are interleaved.
+    ///
+    /// A Thumbnail carries this exactly as an Image does -- the restrictions
+    /// the specification places on thumbnails do not include it -- and the
+    /// default is `Planar`, so reading it matters: a `Normal` thumbnail read
+    /// as planar has its colour channels shuffled.
+    pub fn pixel_storage(&self) -> PixelStorage {
+        self.image.pixel_storage
+    }
+
     /// The parsed attributes.
     pub fn attributes(&self) -> &Image {
         &self.image
@@ -644,7 +654,7 @@ mod tests {
             sample_format: format,
             color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
             pixel_storage: PixelStorage::Planar,
-            bounds: None,
+            bounds: format.requires_bounds().then_some(Bounds { low: 0.0, high: 1.0 }),
             id: None,
             uuid: None,
             image_type: None,

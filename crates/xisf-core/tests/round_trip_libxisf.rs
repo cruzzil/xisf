@@ -176,7 +176,14 @@ fn libxisf_reads_what_we_write() {
                     })
                     .with_rgb_working_space(RgbWorkingSpace::srgb())
                     .with_display_function(DisplayFunction::identity())
-                    .with_icc_profile(vec![0u8; 128])
+                    .with_icc_profile({
+                        // A structurally real profile header; the writer must be
+                        // able to find the flags field inside it.
+                        let mut p = vec![0u8; 128];
+                        p[0..4].copy_from_slice(&128u32.to_be_bytes());
+                        p[36..40].copy_from_slice(b"acsp");
+                        p
+                    })
                     .with_thumbnail(PendingThumbnail::new(
                         thumbnail,
                         thumbnail_data,

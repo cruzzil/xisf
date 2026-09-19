@@ -66,6 +66,41 @@ impl SampleFormat {
                 | SampleFormat::Complex64
         )
     }
+
+    /// Whether an image in this format must declare a `bounds` attribute.
+    ///
+    /// "The bounds attribute is required for floating point real images, that
+    /// is, it shall be defined for images where the value of the sampleFormat
+    /// attribute is either Float32 or Float64."
+    ///
+    /// Deliberately not [`SampleFormat::is_float`], which also answers yes for
+    /// the complex formats: "For complex images the bounds attribute is
+    /// optional because the representable range is formally undefined for
+    /// these images." The two questions look alike and have different answers.
+    pub fn requires_bounds(self) -> bool {
+        matches!(self, SampleFormat::Float32 | SampleFormat::Float64)
+    }
+
+    /// The representable range an image in this format has when it declares no
+    /// `bounds`.
+    ///
+    /// "If the bounds attribute is not specified for an integer image, then
+    /// its representable range shall be [0, 2^k - 1], where k is the number of
+    /// bits per pixel sample." There is no default for the real formats, which
+    /// is why they must declare one, nor for the complex formats, whose range
+    /// is undefined.
+    pub fn default_bounds(self) -> Option<Bounds> {
+        let bits = match self {
+            SampleFormat::UInt8 => 8u32,
+            SampleFormat::UInt16 => 16,
+            SampleFormat::UInt32 => 32,
+            SampleFormat::UInt64 => 64,
+            _ => return None,
+        };
+        // 2^k - 1, computed in f64 because that is what Bounds holds and the
+        // 64-bit case exceeds what an f64 can represent exactly anyway.
+        Some(Bounds { low: 0.0, high: 2f64.powi(bits as i32) - 1.0 })
+    }
 }
 
 /// The colour space the channels are in.

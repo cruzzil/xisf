@@ -64,7 +64,14 @@ fn main() {
         .with_display_function(DisplayFunction::identity())
         .with_thumbnail(PendingThumbnail::new(thumb, vec![1u8; tn], BlockOptions::default()))
         .with_fits_keyword("OBJECT", "M31", "the target")
-        .with_icc_profile(vec![0u8; 12]),
+        .with_icc_profile({
+            // A 128-byte header with the acsp signature: the smallest thing
+            // that is structurally an ICC profile rather than arbitrary bytes.
+            let mut p = vec![0u8; 128];
+            p[0..4].copy_from_slice(&128u32.to_be_bytes());
+            p[36..40].copy_from_slice(b"acsp");
+            p
+        }),
     )
     .expect("add_image");
 

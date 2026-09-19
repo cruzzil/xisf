@@ -26,7 +26,7 @@ fn image(width: u64, height: u64, channels: u64, format: SampleFormat) -> Image 
         sample_format: format,
         color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
         pixel_storage: PixelStorage::Planar,
-        bounds: None,
+        bounds: format.requires_bounds().then_some(xisf::Bounds { low: 0.0, high: 1.0 }),
         id: None,
         uuid: None,
         image_type: None,

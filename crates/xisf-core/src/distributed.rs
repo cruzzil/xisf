@@ -320,7 +320,24 @@ pub fn read_block_from<R: std::io::Read + std::io::Seek>(
 /// Writes a single index node listing every block, then the blocks in order.
 /// The specification allows several nodes and gaps, both of which exist so a
 /// file can be extended in place; a fresh file needs neither.
-pub fn write_blocks_file(blocks: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
+/// One block to place in a data blocks file.
+///
+/// The uncompressed length is carried alongside the bytes because the index
+/// element records it: "If the data block pointed to by the block index
+/// element has been compressed, the value of this item must be the length in
+/// bytes of the uncompressed data block. For free block index elements and
+/// index elements pointing to uncompressed blocks, the uncompressed block
+/// length must be zero." A blocks file writer cannot work that out from the
+/// stored bytes alone, so it has to be told.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct PendingBlock {
+    pub id: u64,
+    pub bytes: Vec<u8>,
+    /// The size before compression, or `None` for a block stored as it is.
+    pub uncompressed_length: Option<u64>,
+}
+
+pub fn write_blocks_file(blocks: &[PendingBlock]) -> Result<Vec<u8>> {
     let node_size = 16 + blocks.len() * IndexElement::SIZE;
     let first_block = BLOCKS_PREAMBLE_LEN
         .checked_add(node_size)
@@ -329,24 +346,36 @@ pub fn write_blocks_file(blocks: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
     let mut seen: BTreeSet<u64> = BTreeSet::new();
     let mut elements = Vec::with_capacity(blocks.len());
     let mut position = first_block as u64;
-    for (id, data) in blocks {
+    for block in blocks {
+        let id = block.id;
         // The identifier is how the header names a block, so a duplicate
         // makes the file ambiguous rather than merely odd.
-        if !seen.insert(*id) {
+        if !seen.insert(id) {
             return Err(err!(InvalidArgument, "two blocks share the identifier {id}"));
+        }
+        // A zero position marks a free element, so a block of no bytes would
+        // be indistinguishable from a placeholder -- and two of them would
+        // share a position, since the cursor would not advance. The only
+        // zero-length block the format allows is an inline one, which never
+        // reaches a blocks file.
+        if block.bytes.is_empty() {
+            return Err(err!(
+                InvalidArgument,
+                "block {id} is empty; a data blocks file holds blocks of one or more bytes"
+            ));
         }
 
         elements.push(IndexElement {
-            id: *id,
+            id,
             position,
-            length: data.len() as u64,
-            uncompressed_length: 0,
+            length: block.bytes.len() as u64,
+            uncompressed_length: block.uncompressed_length.unwrap_or(0),
         });
-        position += data.len() as u64;
+        position += block.bytes.len() as u64;
     }
 
     let mut out =
-        Vec::with_capacity(first_block + blocks.iter().map(|(_, d)| d.len()).sum::<usize>());
+        Vec::with_capacity(first_block + blocks.iter().map(|b| b.bytes.len()).sum::<usize>());
     out.extend_from_slice(BLOCKS_SIGNATURE);
     out.extend_from_slice(&[0u8; 8]);
 
@@ -358,8 +387,8 @@ pub fn write_blocks_file(blocks: &[(u64, Vec<u8>)]) -> Result<Vec<u8>> {
         element.write(&mut out);
     }
 
-    for (_, data) in blocks {
-        out.extend_from_slice(data);
+    for block in blocks {
+        out.extend_from_slice(&block.bytes);
     }
     Ok(out)
 }
@@ -375,28 +404,63 @@ pub fn parse_header_file(bytes: &[u8]) -> Result<crate::header::Header> {
     crate::header::parse(text)
 }
 
+/// A block stored as it is, for tests that do not care about compression.
+#[cfg(test)]
+fn plain_block(id: u64, bytes: &[u8]) -> PendingBlock {
+    PendingBlock { id, bytes: bytes.to_vec(), uncompressed_length: None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ErrorKind;
 
     fn blocks_file(blocks: &[(u64, &[u8])]) -> Vec<u8> {
-        let owned: Vec<(u64, Vec<u8>)> = blocks.iter().map(|(id, d)| (*id, d.to_vec())).collect();
+        let owned: Vec<PendingBlock> = blocks
+            .iter()
+            .map(|(id, d)| PendingBlock { id: *id, bytes: d.to_vec(), uncompressed_length: None })
+            .collect();
         write_blocks_file(&owned).expect("write")
+    }
+
+    /// "For free block index elements and index elements pointing to
+    /// uncompressed blocks, the uncompressed block length must be zero" --
+    /// and for a compressed one it must be the size before compression, which
+    /// a writer cannot work out from the stored bytes and has to be told.
+    #[test]
+    fn an_index_element_records_the_size_before_compression() {
+        let bytes = write_blocks_file(&[
+            PendingBlock { id: 1, bytes: vec![0xAA; 40], uncompressed_length: Some(4096) },
+            PendingBlock { id: 2, bytes: vec![0xBB; 40], uncompressed_length: None },
+        ])
+        .expect("write");
+        let index = parse_blocks_file(&bytes).expect("parse");
+        assert_eq!(index.get(1).unwrap().uncompressed_length, 4096, "compressed block");
+        assert_eq!(index.get(2).unwrap().uncompressed_length, 0, "uncompressed block");
+    }
+
+    /// A zero position marks a free element, so a zero-length block would be
+    /// indistinguishable from a placeholder -- and two of them would share a
+    /// position, since the write cursor would not advance.
+    #[test]
+    fn an_empty_block_cannot_be_placed_in_a_blocks_file() {
+        let err = write_blocks_file(&[plain_block(1, b"")]).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::InvalidArgument);
+        assert!(err.message().contains("empty"), "{}", err.message());
     }
 
     #[test]
     fn a_blocks_file_round_trips() {
-        let bytes = blocks_file(&[(1, b"first"), (7, b"second block"), (99, b"")]);
+        let bytes = blocks_file(&[(1, b"first"), (7, b"second block"), (99, b"third")]);
         let index = parse_blocks_file(&bytes).expect("parse");
 
         assert_eq!(index.elements.len(), 3);
         assert_eq!(index.get(7).unwrap().length, 12);
-        assert_eq!(index.get(99).unwrap().length, 0);
+        assert_eq!(index.get(99).unwrap().length, 5);
         assert!(index.get(1234).is_none());
 
         // And the positions must actually address the data.
-        for (id, expected) in [(1u64, &b"first"[..]), (7, b"second block")] {
+        for (id, expected) in [(1u64, &b"first"[..]), (7, b"second block"), (99, b"third")] {
             let element = index.get(id).unwrap();
             let start = element.position as usize;
             let end = start + element.length as usize;
@@ -493,7 +557,7 @@ mod tests {
 
     #[test]
     fn duplicate_identifiers_are_refused_when_writing() {
-        let err = write_blocks_file(&[(1, b"a".to_vec()), (1, b"b".to_vec())]).unwrap_err();
+        let err = write_blocks_file(&[plain_block(1, b"a"), plain_block(1, b"b")]).unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidArgument);
     }
 

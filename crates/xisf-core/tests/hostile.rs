@@ -468,8 +468,15 @@ fn overlapping_index_nodes_cannot_multiply_into_a_memory_bomb() {
 /// and the seeking reader a `path(...)` block uses.
 #[test]
 fn a_corrupt_blocks_file_never_panics() {
-    let blocks: Vec<(u64, Vec<u8>)> =
-        vec![(1, vec![0xAA; 64]), (7, vec![0xBB; 200]), (9, Vec::new())];
+    use xisf_core::distributed::PendingBlock;
+    // No empty block here: a data blocks file holds blocks of one or more
+    // bytes, and the writer refuses one now, since a zero-length block would
+    // be indistinguishable from a free placeholder.
+    let blocks = [
+        PendingBlock { id: 1, bytes: vec![0xAA; 64], uncompressed_length: None },
+        PendingBlock { id: 7, bytes: vec![0xBB; 200], uncompressed_length: Some(4096) },
+        PendingBlock { id: 9, bytes: vec![0xCC; 3], uncompressed_length: None },
+    ];
     let original = xisf_core::distributed::write_blocks_file(&blocks).expect("write");
 
     let scratch = Scratch::new("blocks-fuzz");

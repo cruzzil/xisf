@@ -18,7 +18,7 @@ fn image(width: u64, height: u64, format: SampleFormat, space: ColorSpace) -> Im
         sample_format: format,
         color_space: space,
         pixel_storage: PixelStorage::Planar,
-        bounds: None,
+        bounds: format.requires_bounds().then_some(xisf::Bounds { low: 0.0, high: 1.0 }),
         id: None,
         image_type: None,
         offset: None,
@@ -35,7 +35,7 @@ fn every_ancillary_element_survives_a_round_trip() {
     let pixels = vec![0x5au8; 8 * 4 * 3 * 2];
     let thumb = image(2, 2, SampleFormat::UInt8, ColorSpace::Gray);
     let thumb_pixels: Vec<u8> = vec![1, 2, 3, 4];
-    let profile: Vec<u8> = (0..64u8).collect();
+    let profile = icc_profile(0x5a, 0);
 
     // The luminance coefficients are derived rather than given: Revision 1
     // makes them follow from the chromaticities and the D50 reference white,
@@ -99,7 +99,11 @@ fn every_ancillary_element_survives_a_round_trip() {
     assert_eq!(read.display_function().expect("display function"), function);
     assert_eq!(read.color_filter_array().expect("CFA"), cfa);
 
-    assert_eq!(read.icc_profile().expect("ICC").expect("ICC block").as_ref(), profile.as_slice());
+    // "must store ICC profile structures unaltered, except for the embedded
+    // profile flag, which must be set". Both halves are checked: the flag is
+    // on, and nothing else moved.
+    let written = read.icc_profile().expect("ICC").expect("ICC block").to_vec();
+    assert_embedded_flag_set_and_nothing_else_changed(&profile, &written);
 
     let thumbnail = read.thumbnail().expect("thumbnail");
     assert_eq!(thumbnail.geometry(), &[2, 2]);
@@ -142,7 +146,7 @@ fn an_srgb_working_space_round_trips_as_the_word() {
 fn blocks_belonging_to_different_images_do_not_collide() {
     let mut writer = Writer::new();
     for n in 0..3u8 {
-        let profile = vec![0xa0 + n; 16 + n as usize];
+        let profile = icc_profile(0xa0 + n, n as usize);
         writer
             .add_image(
                 PendingImage::new(
@@ -164,9 +168,10 @@ fn blocks_belonging_to_different_images_do_not_collide() {
     for (n, read) in file.images().iter().enumerate() {
         let n = n as u8;
         assert_eq!(read.bytes().expect("pixels").as_ref(), vec![n; 4].as_slice());
-        assert_eq!(
-            read.icc_profile().expect("ICC").expect("block").as_ref(),
-            vec![0xa0 + n; 16 + n as usize].as_slice()
+        let written = read.icc_profile().expect("ICC").expect("block").to_vec();
+        assert_embedded_flag_set_and_nothing_else_changed(
+            &icc_profile(0xa0 + n, n as usize),
+            &written,
         );
         assert_eq!(
             read.thumbnail().expect("thumbnail").bytes().expect("block").as_ref(),
@@ -188,7 +193,7 @@ fn ancillary_blocks_survive_a_distributed_unit() {
                 vec![7; 4],
                 BlockOptions::default(),
             )
-            .with_icc_profile(vec![0xcc; 32]),
+            .with_icc_profile(icc_profile(0xcc, 0)),
         )
         .expect("add_image");
 
@@ -201,10 +206,8 @@ fn ancillary_blocks_survive_a_distributed_unit() {
     let file = XisfFile::open(dir.join("unit.xish")).expect("open");
     let read = &file.images()[0];
     assert_eq!(read.bytes().expect("pixels").as_ref(), &[7, 7, 7, 7]);
-    assert_eq!(
-        read.icc_profile().expect("ICC").expect("block").as_ref(),
-        vec![0xcc; 32].as_slice()
-    );
+    let written = read.icc_profile().expect("ICC").expect("block").to_vec();
+    assert_embedded_flag_set_and_nothing_else_changed(&icc_profile(0xcc, 0), &written);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -557,4 +560,90 @@ fn a_table_whose_rows_do_not_match_its_structure_is_refused() {
     bad_id.rows.clear();
     bad_id.id = "not an id".into();
     assert!(Writer::new().add_table(bad_id).is_err(), "an invalid table id was accepted");
+}
+
+/// A minimal but structurally real ICC profile: the mandatory 128-byte header
+/// with the `acsp` signature, a zero tag count, and a recognisable payload.
+///
+/// Short buffers of arbitrary bytes are not profiles, and the writer refuses
+/// them -- it has to set the embedded profile flag inside the header, which a
+/// 16-byte buffer does not have.
+fn icc_profile(fill: u8, extra: usize) -> Vec<u8> {
+    let mut profile = vec![fill; 128 + extra];
+    let size = (128 + extra) as u32;
+    profile[0..4].copy_from_slice(&size.to_be_bytes());
+    profile[36..40].copy_from_slice(b"acsp");
+    // Profile flags, big-endian at offset 44. Left clear on purpose, so a
+    // test can assert the writer sets bit 0.
+    profile[44..48].copy_from_slice(&0u32.to_be_bytes());
+    profile
+}
+
+/// The specification's one permitted alteration, checked in both directions:
+/// bit 0 of the profile flags field is set, and every other byte is the byte
+/// that went in.
+///
+/// Asserting only the first half would pass for a writer that rebuilt the
+/// profile; asserting only the second would pass for one that ignored the
+/// requirement entirely.
+fn assert_embedded_flag_set_and_nothing_else_changed(before: &[u8], after: &[u8]) {
+    const FLAGS_AT: usize = 44;
+    assert_eq!(before.len(), after.len(), "the profile changed length");
+
+    let flags = u32::from_be_bytes(after[FLAGS_AT..FLAGS_AT + 4].try_into().unwrap());
+    assert_eq!(flags & 1, 1, "the embedded profile flag was not set");
+
+    let mut before = before.to_vec();
+    let original = u32::from_be_bytes(before[FLAGS_AT..FLAGS_AT + 4].try_into().unwrap());
+    before[FLAGS_AT..FLAGS_AT + 4].copy_from_slice(&(original | 1).to_be_bytes());
+    assert_eq!(before, after, "a byte outside the profile flags field was altered");
+}
+
+/// A thumbnail's pixel storage model must survive being written.
+///
+/// "Other than its tag name, a Thumbnail core element is identical to an Image
+/// core element" apart from a short list of restrictions that does not mention
+/// pixelStorage -- and the default is Planar. So dropping the attribute from a
+/// Normal thumbnail was not an omission but a silent corruption: it read back
+/// as Planar, with its colour channels interleaved wrongly and nothing
+/// reporting it.
+#[test]
+fn a_thumbnails_pixel_storage_survives_the_round_trip() {
+    use xisf::PixelStorage;
+
+    for storage in [PixelStorage::Planar, PixelStorage::Normal] {
+        let mut thumb = image(2, 2, SampleFormat::UInt8, ColorSpace::Rgb);
+        thumb.pixel_storage = storage;
+        // Distinguishable per channel, so a wrong reading is visible in the
+        // bytes and not only in the attribute.
+        let pixels: Vec<u8> = vec![1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3];
+
+        let mut writer = Writer::new();
+        writer
+            .add_image(
+                PendingImage::new(
+                    image(2, 2, SampleFormat::UInt8, ColorSpace::Gray),
+                    vec![0; 4],
+                    BlockOptions::default(),
+                )
+                .with_thumbnail(PendingThumbnail::new(
+                    thumb,
+                    pixels.clone(),
+                    BlockOptions::default(),
+                )),
+            )
+            .expect("add_image");
+
+        let bytes = writer.to_bytes().expect("write");
+        let file = XisfFile::from_bytes(bytes).expect("read back");
+        let read = file.images()[0].thumbnail().expect("thumbnail");
+
+        assert_eq!(
+            read.pixel_storage(),
+            storage,
+            "a {storage:?} thumbnail came back as {:?}",
+            read.pixel_storage()
+        );
+        assert_eq!(read.bytes().expect("thumbnail pixels").as_ref(), pixels.as_slice());
+    }
 }

@@ -788,9 +788,10 @@ mod tests {
     /// local one is, so the resolver only has to supply bytes.
     #[test]
     fn a_remote_blocks_file_is_addressed_by_identifier() {
+        use crate::distributed::PendingBlock;
         let blocks = crate::distributed::write_blocks_file(&[
-            (1, b"first".to_vec()),
-            (0x2a, b"the wanted one".to_vec()),
+            PendingBlock { id: 1, bytes: b"first".to_vec(), uncompressed_length: None },
+            PendingBlock { id: 0x2a, bytes: b"the wanted one".to_vec(), uncompressed_length: None },
         ])
         .unwrap();
 

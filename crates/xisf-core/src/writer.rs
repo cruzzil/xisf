@@ -186,9 +186,18 @@ impl PendingImage {
 
     /// Attach a raw ICC profile.
     ///
-    /// The bytes are written exactly as given. An ICC profile is defined as
-    /// big-endian by its own specification, so the spec forbids a `byteOrder`
-    /// attribute on this block and none is written.
+    /// The bytes are written as given but for one bit. The specification
+    /// requires a profile to be stored "unaltered, except for the embedded
+    /// profile flag, which must be set", and that flag "must be set to one to
+    /// signify that the profile has been embedded in a file" -- a profile
+    /// taken straight off disk normally has it clear, so writing it verbatim
+    /// produces an embedded profile advertising that it is not embedded, and
+    /// a colour-managed reader may substitute the display profile and shift
+    /// every colour in the image.
+    ///
+    /// An ICC profile is defined as big-endian by its own specification, so
+    /// the spec forbids a `byteOrder` attribute on this block and none is
+    /// written.
     pub fn with_icc_profile(mut self, profile: Vec<u8>) -> Self {
         self.icc_profile = Some(profile);
         self
@@ -300,6 +309,20 @@ impl Writer {
             return Err(err!(
                 InvalidArgument,
                 "two images share the id {id:?}, which must be unique within the unit"
+            ));
+        }
+
+        // "The bounds attribute is required for floating point real images."
+        // Without it a reader has no black and white point and must guess --
+        // PixInsight assumes [0,1], a pipeline working in ADU assumes
+        // [0,65535] -- so the pixels survive and every statistic taken from
+        // them is wrong by a factor nothing reports.
+        if pending.image.sample_format.requires_bounds() && pending.image.bounds.is_none() {
+            return Err(err!(
+                InvalidArgument,
+                "a {} image must declare its bounds; there is no default \
+                 representable range for floating point real pixel data",
+                pending.image.sample_format.name()
             ));
         }
 
@@ -440,11 +463,20 @@ impl Writer {
 
         let stored = self.prepare_blocks()?;
 
-        let blocks: Vec<(u64, Vec<u8>)> = stored
+        let blocks: Vec<crate::distributed::PendingBlock> = stored
             .blocks
             .iter()
             .enumerate()
-            .map(|(index, block)| (block_id(index), block.bytes.clone()))
+            .map(|(index, block)| crate::distributed::PendingBlock {
+                id: block_id(index),
+                bytes: block.bytes.clone(),
+                // The index element records the size before compression, and
+                // zero for a block stored as it is.
+                uncompressed_length: block
+                    .compression
+                    .as_ref()
+                    .map(|compression| compression.uncompressed_size),
+            })
             .collect();
 
         let header =
@@ -477,7 +509,9 @@ impl Writer {
             let data = push(&pending.data, &pending.options)?;
             let icc = match &pending.icc_profile {
                 None => None,
-                Some(profile) => Some(push(profile, &BlockOptions::default())?),
+                Some(profile) => {
+                    Some(push(&with_embedded_profile_flag(profile)?, &BlockOptions::default())?)
+                }
             };
             let thumbnail = match &pending.thumbnail {
                 None => None,
@@ -664,11 +698,37 @@ impl Writer {
                     thumb.dimensions.iter().map(u64::to_string).collect();
                 geometry.push(thumb.channels.to_string());
                 xml.push_str(&format!(
-                    "<Thumbnail geometry=\"{}\" sampleFormat=\"{}\" colorSpace=\"{}\"",
+                    "<Thumbnail geometry=\"{}\" sampleFormat=\"{}\" colorSpace=\"{}\" \
+                     pixelStorage=\"{}\"",
                     geometry.join(":"),
                     thumb.sample_format.name(),
-                    thumb.color_space.name()
+                    thumb.color_space.name(),
+                    // Dropping this was a silent corruption rather than an
+                    // omission: "Other than its tag name, a Thumbnail core
+                    // element is identical to an Image core element" apart
+                    // from a short list of restrictions that does not include
+                    // pixelStorage, and the default is Planar -- so a Normal
+                    // thumbnail read back with its channels interleaved
+                    // wrongly, with nothing reporting it.
+                    thumb.pixel_storage.name()
                 ));
+                if let Some(id) = &thumb.id {
+                    xml.push_str(&format!(" id=\"{}\"", escape_attr(id)));
+                }
+                if let Some(uuid) = &thumb.uuid {
+                    xml.push_str(&format!(" uuid=\"{}\"", escape_attr(uuid)));
+                }
+                if let Some(kind) = &thumb.image_type {
+                    xml.push_str(&format!(" imageType=\"{}\"", escape_attr(kind.name())));
+                }
+                if let Some(offset) = thumb.offset {
+                    xml.push_str(&format!(" offset=\"{offset}\""));
+                }
+                if let Some(orientation) = thumb.orientation
+                    && !orientation.is_identity()
+                {
+                    xml.push_str(&format!(" orientation=\"{}\"", orientation.to_attribute()));
+                }
                 push_block_attrs(&mut xml, &stored.blocks[index]);
                 xml.push_str(&format!(" location=\"{}\"/>", locate(index)));
             }
@@ -910,7 +970,13 @@ fn push_table(xml: &mut String, table: &Table) {
                 (None, Some(text)) => {
                     xml.push_str(&format!("<Cell>{}</Cell>", escape_text(text)));
                 }
-                (None, None) => xml.push_str("<Cell value=\"\"/>"),
+                // Not `<Cell value=""/>`. A String field's cell "shall not
+                // have a value attribute", and Revision 1 amended the
+                // specification's own table examples for exactly this -- so
+                // emitting one produced the construct the revision was written
+                // to forbid. The spec's corrected example uses the empty
+                // element, which is valid for every field type.
+                (None, None) => xml.push_str("<Cell/>"),
             }
         }
         xml.push_str("</Row>");
@@ -1112,6 +1178,42 @@ fn compress(data: &[u8], codec: Codec2) -> Result<Vec<u8>> {
     }
 }
 
+/// A copy of an ICC profile with its embedded profile flag set.
+///
+/// The one alteration the specification permits: profiles "must store ICC
+/// profile structures unaltered, except for the embedded profile flag", which
+/// is bit 0 of the profile flags field -- a big-endian `u32` at byte offset 44
+/// of the 128-byte profile header, per section 7.2.11 of the ICC
+/// specification.
+///
+/// Everything else is copied byte for byte. A buffer too short to hold a
+/// profile header is refused rather than written: it is not a profile, and
+/// silently storing it would put something that is not an ICC profile in an
+/// element that says it is one.
+fn with_embedded_profile_flag(profile: &[u8]) -> Result<Vec<u8>> {
+    /// The fixed size of an ICC profile header.
+    const HEADER_LEN: usize = 128;
+    /// Byte offset of the profile flags field within that header.
+    const FLAGS_AT: usize = 44;
+    /// Bit 0 of the flags field: "the profile is embedded in a file".
+    const EMBEDDED: u32 = 1;
+
+    if profile.len() < HEADER_LEN {
+        return Err(err!(
+            InvalidArgument,
+            "an ICC profile needs at least {HEADER_LEN} bytes of header, this has {}",
+            profile.len()
+        ));
+    }
+
+    let mut out = profile.to_vec();
+    let flags = u32::from_be_bytes(
+        out[FLAGS_AT..FLAGS_AT + 4].try_into().expect("four bytes inside the header"),
+    );
+    out[FLAGS_AT..FLAGS_AT + 4].copy_from_slice(&(flags | EMBEDDED).to_be_bytes());
+    Ok(out)
+}
+
 /// Render a `compression` attribute.
 fn compression_attr(compression: &Compression) -> String {
     match compression.shuffle_item_size {
@@ -1166,7 +1268,9 @@ mod tests {
             sample_format: format,
             color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
             pixel_storage: PixelStorage::Planar,
-            bounds: None,
+            bounds: format
+                .requires_bounds()
+                .then_some(crate::image::Bounds { low: 0.0, high: 1.0 }),
             id: None,
             uuid: None,
             image_type: None,

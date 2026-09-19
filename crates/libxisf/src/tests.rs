@@ -11,7 +11,11 @@ fn sample_file(format: SampleFormat, channels: u64) -> Vec<u8> {
         sample_format: format,
         color_space: if channels >= 3 { ColorSpace::Rgb } else { ColorSpace::Gray },
         pixel_storage: PixelStorage::Planar,
-        bounds: None,
+        // Required for the floating point real formats, and meaningless for
+        // the rest, so it follows the format rather than being hardcoded.
+        bounds: format
+            .requires_bounds()
+            .then_some(xisf_core::image::Bounds { low: 0.0, high: 1.0 }),
         id: None,
         uuid: None,
         image_type: None,
