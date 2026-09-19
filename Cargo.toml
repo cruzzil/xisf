@@ -33,7 +33,7 @@ lz4_flex = "0.11"
 # without it.
 zrip = { version = "0.8", default-features = false, features = ["std", "frame"] }
 sha1 = "0.10"
-sha2 = "0.10"
+sha2 = "0.11"
 sha3 = "0.10"
 memmap2 = "0.9"
 
