@@ -612,23 +612,24 @@ fn decode_text(text: &str, encoding: TextEncoding) -> Result<Vec<u8>> {
 }
 
 /// Hash `bytes` with the algorithm named.
+///
+/// Every algorithm the format allows is always available. Revision 1 requires
+/// a conforming decoder to verify SHA-1, SHA-256 and SHA-512, and requires
+/// decoders to verify every block checksum they are given, so a build that
+/// could only report "not compiled in" would be a decoder that cannot claim
+/// conformance. The `Result` is kept because it is part of the public
+/// signature and because callers already handle it.
 pub fn digest(bytes: &[u8], algorithm: ChecksumAlgorithm) -> Result<Vec<u8>> {
-    #[cfg(feature = "checksums")]
-    {
-        use sha1::Digest as _;
-        Ok(match algorithm {
-            ChecksumAlgorithm::Sha1 => sha1::Sha1::digest(bytes).to_vec(),
-            ChecksumAlgorithm::Sha256 => sha2::Sha256::digest(bytes).to_vec(),
-            ChecksumAlgorithm::Sha512 => sha2::Sha512::digest(bytes).to_vec(),
-            ChecksumAlgorithm::Sha3_256 => sha3::Sha3_256::digest(bytes).to_vec(),
-            ChecksumAlgorithm::Sha3_512 => sha3::Sha3_512::digest(bytes).to_vec(),
-        })
-    }
-    #[cfg(not(feature = "checksums"))]
-    {
-        let _ = bytes;
-        Err(err!(Unsupported, "{} support is not compiled in", algorithm.name()))
-    }
+    use sha1::Digest as _;
+    Ok(match algorithm {
+        ChecksumAlgorithm::Sha1 => sha1::Sha1::digest(bytes).to_vec(),
+        ChecksumAlgorithm::Sha256 => sha2::Sha256::digest(bytes).to_vec(),
+        ChecksumAlgorithm::Sha512 => sha2::Sha512::digest(bytes).to_vec(),
+        // FIPS 202, not the original Keccak submission -- Revision 1 makes
+        // that explicit, and the two differ in their padding.
+        ChecksumAlgorithm::Sha3_256 => sha3::Sha3_256::digest(bytes).to_vec(),
+        ChecksumAlgorithm::Sha3_512 => sha3::Sha3_512::digest(bytes).to_vec(),
+    })
 }
 
 /// The hex spelling of a digest, as a `checksum` attribute carries it.
@@ -801,7 +802,6 @@ mod tests {
         assert_eq!(&*reader.stored_block(&data).unwrap(), b"the wanted one");
     }
 
-    #[cfg(feature = "checksums")]
     #[test]
     fn checksums_are_over_the_stored_bytes() {
         let digest = digest_hex(&digest(b"ABC", ChecksumAlgorithm::Sha256).unwrap());
@@ -813,9 +813,6 @@ mod tests {
         assert_eq!(reader.verify(&image.data).unwrap(), ChecksumStatus::Valid);
     }
 
-    // Needs a hash implementation compiled in; without the feature the
-    // library correctly refuses rather than pretending to verify.
-    #[cfg(feature = "checksums")]
     #[test]
     fn a_wrong_checksum_is_reported_not_ignored() {
         let xml = format!(

@@ -30,6 +30,9 @@ lz4_flex = "0.11"
 # workspace free of a C toolchain, which matters for the six-platform CI and
 # lets Miri run, and zstd is not one of XISF 1.0's standard codecs anyway.
 ruzstd = "0.9"
+# The encoding half of Zstandard. Pure Rust, like `ruzstd`; `simd` is left off
+# so the codebase stays interpretable under Miri.
+zrip = { version = "0.8", default-features = false, features = ["std", "frame"] }
 sha1 = "0.10"
 sha2 = "0.10"
 sha3 = "0.10"

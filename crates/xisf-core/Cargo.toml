@@ -17,19 +17,31 @@ base64.workspace = true
 memmap2.workspace = true
 flate2 = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
-ruzstd = { workspace = true, optional = true }
-sha1 = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
-sha3 = { workspace = true, optional = true }
+# Zstandard, which Revision 1 makes a standard codec and the recommended one,
+# so neither of these is optional. They are separate crates because they do
+# separate jobs: `ruzstd` decodes and `zrip` encodes. Decoding is the side
+# that faces hostile files, and `ruzstd` has orders of magnitude more use
+# behind it, so it keeps that job; `zrip` only ever compresses data we
+# produced ourselves. Both are pure Rust, which is what keeps this workspace
+# free of a C toolchain -- `zrip` depends on the reference implementation only
+# as a dev-dependency, to test its output against it.
+ruzstd.workspace = true
+zrip.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+sha3.workspace = true
 
 [features]
-default = ["zlib", "lz4", "zstd", "checksums"]
+# Revision 1 requires every conforming decoder to support the standard
+# compression codecs and to verify SHA-1, SHA-256 and SHA-512 checksums, so
+# Zstandard and the hashes are no longer switchable: a build with them off
+# would be a decoder that cannot claim conformance, which is not a
+# configuration worth offering. zlib and lz4 remain features only because
+# turning one off still leaves a decoder that refuses those blocks and keeps
+# the rest of the unit readable, which the specification explicitly allows.
+default = ["zlib", "lz4"]
 zlib = ["dep:flate2"]
 lz4 = ["dep:lz4_flex"]
-# Not one of XISF 1.0's standard codecs, but libXISF writes it, so files
-# using it exist and a reader that cannot open them is less useful.
-zstd = ["dep:ruzstd"]
-checksums = ["dep:sha1", "dep:sha2", "dep:sha3"]
 
 [lints]
 workspace = true

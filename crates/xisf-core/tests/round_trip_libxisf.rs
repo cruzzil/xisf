@@ -92,11 +92,7 @@ fn libxisf_reads_what_we_write() {
                 shuffle_item_size: Some(format.size() as u64),
             }));
         }
-        let checksums = if cfg!(feature = "checksums") {
-            vec![None, Some(ChecksumAlgorithm::Sha256)]
-        } else {
-            vec![None]
-        };
+        let checksums = vec![None, Some(ChecksumAlgorithm::Sha256)];
 
         for compression in compressions {
             for checksum in &checksums {

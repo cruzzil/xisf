@@ -204,17 +204,21 @@ pub enum Codec {
     Lz4,
     /// LZ4 block format, high-compression encoder. Decodes as [`Codec::Lz4`].
     Lz4Hc,
-    /// Zstandard. Not among XISF 1.0's standard codecs, but libXISF writes
-    /// it, so it is read here.
+    /// Zstandard. Revision 1 of the specification adds `zstd` and `zstd+sh`
+    /// to the standard codecs and makes Zstandard the recommended one, so a
+    /// decoder claiming conformance must support it.
     Zstd,
     /// A codec this build cannot decode, kept by name.
     ///
-    /// XISF 1.0 names zlib, LZ4 and LZ4HC as its standard codecs, but an
-    /// encoder may write others -- libXISF writes ZSTD. A file containing one
-    /// such block is still a readable file: its header parses, its other
-    /// blocks decode, and only *this* block fails, at the point something
-    /// asks for its bytes. Refusing the whole file at parse time would make
-    /// its metadata unreachable for no reason.
+    /// Revision 1 names zlib, LZ4, LZ4HC and Zstandard as the standard
+    /// codecs, but an encoder may write others. A file containing one such
+    /// block is still a readable file: its header parses, its other blocks
+    /// decode, and only *this* block fails, at the point something asks for
+    /// its bytes. That is what the specification requires -- "a decoder that
+    /// does not support the codec of a compressed data block shall treat the
+    /// block as unavailable and keep the rest of the XISF unit accessible" --
+    /// and refusing the whole file at parse time would make its metadata
+    /// unreachable for no reason.
     Other(String),
 }
 

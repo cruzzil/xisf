@@ -15,15 +15,36 @@ use crate::block::{Codec, Compression};
 use crate::err;
 use crate::error::Result;
 
-/// The largest expansion ratio a codec can plausibly achieve.
+/// The largest expansion ratio a given codec can plausibly achieve.
 ///
-/// DEFLATE's theoretical best is about 1032:1 and LZ4's is 255:1, so this is
-/// generous for both. It exists because `uncompressed_size` is a number in a
-/// file rather than a fact: without a bound, a header saying
+/// This exists because `uncompressed_size` is a number in a file rather than
+/// a fact: without a bound, a header saying
 /// `compression="zlib:4398046511104"` over a hundred compressed bytes asks
 /// the reader to reserve four terabytes, and a decoder that obliges is a
 /// denial-of-service primitive that costs an attacker a hundred bytes.
-const MAX_EXPANSION_RATIO: u64 = 2048;
+///
+/// The bound is per codec because the codecs differ by more than an order of
+/// magnitude, and one number generous enough for the best of them is no bound
+/// at all on the others. DEFLATE's theoretical best is about 1032:1 and LZ4's
+/// is 255:1; Zstandard reaches far higher, and not only in theory -- eight
+/// megabytes of zeroes compress to 781 bytes, a ratio of 10741:1, and an
+/// all-zero calibration frame or a heavily masked region is an ordinary thing
+/// to find in an astronomical image. A single ceiling tight enough for
+/// DEFLATE would reject those, so each codec gets its own with room above
+/// what it can actually do.
+fn max_expansion_ratio(codec: &Codec) -> u64 {
+    match codec {
+        // ~1032:1 in theory.
+        Codec::Zlib => 2048,
+        // ~255:1 in theory.
+        Codec::Lz4 | Codec::Lz4Hc => 512,
+        // ~32768:1 for a single frame; measured above 10000:1 in practice.
+        Codec::Zstd => 65536,
+        // Nothing is known about a codec this build cannot decode, and the
+        // attempt will fail on the codec itself a moment later anyway.
+        Codec::Other(_) => 65536,
+    }
+}
 
 /// The most that is reserved up front, whatever the header claims.
 ///
@@ -51,7 +72,6 @@ const MAX_PREALLOCATION: usize = 64 << 20;
 /// promised comes back one byte long and is refused by the equality check that
 /// follows. LZ4 needs no such bound -- it decodes into a caller-sized buffer
 /// and so is already limited by construction.
-#[cfg(any(feature = "zlib", feature = "zstd"))]
 fn output_limit(size: usize) -> u64 {
     (size as u64).saturating_add(1)
 }
@@ -64,7 +84,8 @@ pub fn decode(stored: &[u8], compression: &Compression) -> Result<Vec<u8>> {
     // Checked before anything is allocated, and against the bytes actually
     // present rather than against a constant, so a small hostile block is
     // refused while a large legitimate one is not.
-    let ceiling = (stored.len() as u64).saturating_mul(MAX_EXPANSION_RATIO).max(1024);
+    let ceiling =
+        (stored.len() as u64).saturating_mul(max_expansion_ratio(&compression.codec)).max(1024);
     if compression.uncompressed_size > ceiling {
         return Err(err!(
             Compression,
@@ -161,7 +182,7 @@ fn decompress_subblocks(stored: &[u8], compression: &Compression, size: usize) -
 // With every codec feature off, each arm below is compiled out and only the
 // catch-all remains, leaving these parameters unread. That is the correct
 // behaviour for such a build, not an oversight.
-#[cfg_attr(not(any(feature = "zlib", feature = "lz4", feature = "zstd")), allow(unused_variables))]
+#[cfg_attr(not(any(feature = "zlib", feature = "lz4")), allow(unused_variables))]
 fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
     match codec {
         #[cfg(feature = "zlib")]
@@ -180,7 +201,6 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
         Codec::Lz4 | Codec::Lz4Hc => {
             lz4_flex::block::decompress(stored, size).map_err(|e| err!(Compression, "lz4: {e}"))
         }
-        #[cfg(feature = "zstd")]
         Codec::Zstd => {
             use std::io::Read;
             let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
@@ -276,7 +296,7 @@ mod tests {
     #[test]
     fn an_implausible_expansion_ratio_is_refused_before_allocating() {
         let stored = vec![0u8; 100];
-        for declared in [1u64 << 42, u64::MAX / 2, 100 * MAX_EXPANSION_RATIO + 1] {
+        for declared in [1u64 << 42, u64::MAX / 2, 100 * max_expansion_ratio(&Codec::Zlib) + 1] {
             let compression = Compression {
                 codec: Codec::Zlib,
                 uncompressed_size: declared,
@@ -312,7 +332,8 @@ mod tests {
         // The declaration is small, so the ratio check has nothing to catch:
         // a lie downward is still a lie.
         let declared = 1024;
-        let ceiling = (stored.len() as u64).saturating_mul(MAX_EXPANSION_RATIO).max(1024);
+        let ceiling =
+            (stored.len() as u64).saturating_mul(max_expansion_ratio(&Codec::Zlib)).max(1024);
         assert!(declared <= ceiling, "this test is meaningless if the ratio check fires");
 
         let compression = Compression {
@@ -328,6 +349,28 @@ mod tests {
             "the decoder ran past the declared size: {}",
             err.message()
         );
+    }
+
+    /// Zstandard reaches ratios an order of magnitude past anything DEFLATE
+    /// can manage, and an all-zero calibration frame or a heavily masked
+    /// region is an ordinary thing to find in an astronomical image. A
+    /// ceiling tight enough for DEFLATE rejects those, so this pins that the
+    /// per-codec bound does not.
+    #[test]
+    fn a_highly_compressible_zstd_block_is_not_mistaken_for_a_bomb() {
+        let plain = vec![0u8; 8 << 20];
+        let stored = zrip::compress(&plain, 3).expect("compress");
+
+        let ratio = plain.len() / stored.len();
+        assert!(ratio > 2048, "this test is meaningless below the old ceiling (got {ratio}:1)");
+
+        let compression = Compression {
+            codec: Codec::Zstd,
+            uncompressed_size: plain.len() as u64,
+            shuffle_item_size: None,
+            subblocks: Vec::new(),
+        };
+        assert_eq!(decode(&stored, &compression).expect("a real frame was refused"), plain);
     }
 
     /// The bound must not reject legitimate files. A small block that really

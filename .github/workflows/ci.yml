@@ -223,7 +223,9 @@ jobs:
           cargo doc -p libxisf --no-deps --target-dir target/doc-capi
 
   # Each optional codec must build and pass on its own: a consumer who turns
-  # off zstd should not find the crate stops compiling.
+  # off zlib should not find the crate stops compiling. Zstandard and the
+  # checksum hashes are not in this list because they are no longer optional
+  # -- Revision 1 requires every conforming decoder to have them.
   features:
     runs-on: ubuntu-latest
     steps:
@@ -234,7 +236,7 @@ jobs:
         run: cargo test -p xisf-core --no-default-features
       - name: Each codec alone
         run: |
-          for feature in zlib lz4 zstd checksums; do
+          for feature in zlib lz4; do
             echo "== $feature =="
             cargo test -p xisf-core --no-default-features --features "$feature"
           done

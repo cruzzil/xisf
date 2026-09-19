@@ -364,7 +364,6 @@ fn the_structural_limits_do_not_reject_real_files() {
 /// the bytes are the bytes that were written. Handing them over without
 /// looking is a silent corruption the format went out of its way to make
 /// detectable, so the check is on unless a caller turns it off.
-#[cfg(feature = "checksums")]
 #[test]
 fn a_block_that_fails_its_own_checksum_is_refused_by_default() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

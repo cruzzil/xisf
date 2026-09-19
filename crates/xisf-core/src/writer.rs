@@ -49,11 +49,17 @@ pub struct CompressionRequest {
 
 /// The codecs this crate can *write*.
 ///
-/// Narrower than [`Codec`], deliberately. `ruzstd` decodes but does not
-/// encode, so zstd can be read and not written; a separate type makes that a
-/// compile-time fact rather than a runtime surprise.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Narrower than [`Codec`], deliberately: [`Codec`] also names LZ4_HC, which
+/// is an encoder setting rather than a stream format and which this writer
+/// does not offer, and the codecs a future file might use that this build
+/// cannot produce. A separate type makes that a compile-time fact rather than
+/// a runtime surprise.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Codec2 {
+    /// Zstandard, which Revision 1 makes the recommended codec. It is the
+    /// default here for that reason.
+    #[default]
+    Zstd,
     Zlib,
     Lz4,
 }
@@ -61,6 +67,7 @@ pub enum Codec2 {
 impl Codec2 {
     fn as_codec(self) -> Codec {
         match self {
+            Codec2::Zstd => Codec::Zstd,
             Codec2::Zlib => Codec::Zlib,
             Codec2::Lz4 => Codec::Lz4,
         }
@@ -748,6 +755,10 @@ fn codec_input_limit(codec: Codec2) -> u64 {
         Codec2::Zlib => u64::from(u32::MAX),
         // LZ4_MAX_INPUT_SIZE, which every LZ4 implementation shares.
         Codec2::Lz4 => 0x7E00_0000,
+        // Zstandard frames carry a 64-bit content size and have no practical
+        // input limit of their own, so the bound is what one allocation can
+        // hold rather than anything the format imposes.
+        Codec2::Zstd => u64::MAX,
     }
 }
 
@@ -1029,6 +1040,11 @@ fn compress(data: &[u8], codec: Codec2) -> Result<Vec<u8>> {
         }
         #[cfg(feature = "lz4")]
         Codec2::Lz4 => Ok(lz4_flex::block::compress(data)),
+        // Level 3 is `zrip`'s DFast strategy: the middle of the -8..4 range it
+        // implements, and a ratio comparable to zlib's default at a good deal
+        // less time. Revision 1 stores Zstandard as one frame per subblock,
+        // and this writer emits one stream per block, so one frame is right.
+        Codec2::Zstd => zrip::compress(data, 3).map_err(|e| err!(Compression, "zstd: {e}")),
         #[allow(unreachable_patterns)]
         other => Err(err!(Unsupported, "cannot write {:?} blocks in this build", other)),
     }
@@ -1125,7 +1141,13 @@ mod tests {
     /// honest under `--no-default-features` rather than asserting that an
     /// absent codec works.
     fn writable_compressions() -> Vec<Option<CompressionRequest>> {
-        let mut out = vec![None];
+        // Zstandard is never absent: Revision 1 makes it standard and this
+        // crate compiles it in unconditionally.
+        let mut out = vec![
+            None,
+            Some(CompressionRequest { codec: Codec2::Zstd, shuffle_item_size: None }),
+            Some(CompressionRequest { codec: Codec2::Zstd, shuffle_item_size: Some(4) }),
+        ];
         if cfg!(feature = "zlib") {
             out.push(Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: None }));
             out.push(Some(CompressionRequest { codec: Codec2::Zlib, shuffle_item_size: Some(4) }));
@@ -1138,11 +1160,7 @@ mod tests {
     }
 
     fn writable_checksums() -> Vec<Option<ChecksumAlgorithm>> {
-        if cfg!(feature = "checksums") {
-            vec![None, Some(ChecksumAlgorithm::Sha256)]
-        } else {
-            vec![None]
-        }
+        vec![None, Some(ChecksumAlgorithm::Sha256)]
     }
 
     #[test]
@@ -1182,7 +1200,7 @@ mod tests {
         assert_eq!(expected as usize, bytes.len(), "the file has trailing bytes");
     }
 
-    #[cfg(all(feature = "zlib", feature = "checksums"))]
+    #[cfg(feature = "zlib")]
     #[test]
     fn checksums_written_are_checksums_that_verify() {
         let image = image(8, 8, 1, SampleFormat::UInt16);

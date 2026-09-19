@@ -102,9 +102,7 @@ fn every_generated_file_reads_back_exactly() {
             "{name}: the bytes differ from what the generator wrote"
         );
 
-        if cfg!(feature = "checksums") {
-            assert!(!reader.verify(&image.data).unwrap().is_failure(), "{name}: checksum mismatch");
-        }
+        assert!(!reader.verify(&image.data).unwrap().is_failure(), "{name}: checksum mismatch");
         matched += 1;
     }
 
@@ -123,7 +121,6 @@ fn every_generated_file_reads_back_exactly() {
         "zlib",
         #[cfg(feature = "lz4")]
         "lz4",
-        #[cfg(feature = "zstd")]
         "zstd",
     ];
     for (name, why) in &unsupported {

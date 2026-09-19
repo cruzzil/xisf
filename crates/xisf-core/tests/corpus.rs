@@ -58,7 +58,7 @@ fn reads_an_uncompressed_attached_image() {
 
 /// The interesting one: byte-shuffled zlib, and a checksum to prove the bytes
 /// came back exactly as PixInsight wrote them. Needs both compiled in.
-#[cfg(all(feature = "zlib", feature = "checksums"))]
+#[cfg(feature = "zlib")]
 #[test]
 fn reads_a_shuffled_zlib_image_and_verifies_its_checksum() {
     use xisf_core::block::Codec;
@@ -129,14 +129,10 @@ fn every_sample_file_reads_and_verifies() {
             {
                 continue;
             }
-            // Only when a hash implementation is compiled in; otherwise
-            // `verify` correctly reports that it cannot check.
-            if cfg!(feature = "checksums") {
-                let status = reader
-                    .verify(&element.data)
-                    .unwrap_or_else(|e| panic!("{}: verify: {e}", path.display()));
-                assert!(!status.is_failure(), "{}: checksum mismatch", path.display());
-            }
+            let status = reader
+                .verify(&element.data)
+                .unwrap_or_else(|e| panic!("{}: verify: {e}", path.display()));
+            assert!(!status.is_failure(), "{}: checksum mismatch", path.display());
 
             match reader.block(&element.data) {
                 Ok(_) => checked += 1,
