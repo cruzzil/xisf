@@ -454,10 +454,24 @@ fn finish(element: Element, stack: &mut [Element], root: &mut Option<Element>) -
             parent.children.push(element);
         }
         None => {
-            if root.is_some() {
-                return Err(err!(BadHeader, "the header has more than one root element"));
+            // A second top-level element is the detached XML signature, not a
+            // malformed header. "Since the signature is placed after the XISF
+            // root element, a signed XISF header contains two top-level
+            // elements. XML processors that enforce a single document element
+            // ... will reject a signed header as it stands; an XISF decoder
+            // built on such a processor must isolate the XISF root element
+            // before parsing it, and validate the signature separately."
+            //
+            // Isolating it is exactly this: keep the first, ignore what
+            // follows. Refusing instead made every signed unit unreadable,
+            // which is the whole file lost over an optional feature. The
+            // signature itself is not verified here -- that needs XML
+            // canonicalization and a key, and is the caller's business -- and
+            // `Reader::header_text` still hands back the original bytes, so
+            // nothing this crate does invalidates one.
+            if root.is_none() {
+                *root = Some(element);
             }
-            *root = Some(element);
         }
     }
     Ok(())

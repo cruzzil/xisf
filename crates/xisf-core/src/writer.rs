@@ -350,6 +350,13 @@ impl Writer {
             ));
         }
 
+        if let Some(id) = &pending.image.id {
+            check_image_id(id)?;
+        }
+        if let Some(uuid) = &pending.image.uuid {
+            check_uuid(uuid)?;
+        }
+
         let expected = pending
             .image
             .data_size()
@@ -1214,6 +1221,57 @@ fn compress(data: &[u8], codec: Codec2) -> Result<Vec<u8>> {
         #[allow(unreachable_patterns)]
         other => Err(err!(Unsupported, "cannot write {:?} blocks in this build", other)),
     }
+}
+
+/// Check an image identifier against the grammar the specification gives.
+///
+/// "image-id shall be a sequence of ASCII characters satisfying the following
+/// regular expression: `[_a-zA-Z][_a-zA-Z0-9]*`". Property identifiers were
+/// already checked; images were not, so the writer could emit a header the
+/// schema rejects.
+fn check_image_id(id: &str) -> Result<()> {
+    let mut chars = id.chars();
+    let valid = match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {
+            chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(err!(
+            InvalidArgument,
+            "{id:?} is not a valid image identifier; it must match [_a-zA-Z][_a-zA-Z0-9]*"
+        ));
+    }
+    Ok(())
+}
+
+/// Check a UUID against the canonical form, and that it is version 4.
+///
+/// "uuid must be a plain text representation of a Universally Unique
+/// Identifier (UUID) in canonical form. Version 4 UUIDs must be used" --
+/// Revision 1 tightened the generator requirements and replaced the obsolete
+/// RFC 4122 reference with RFC 9562.
+fn check_uuid(uuid: &str) -> Result<()> {
+    let groups: Vec<&str> = uuid.split('-').collect();
+    let shaped = groups.len() == 5
+        && [8usize, 4, 4, 4, 12].iter().zip(&groups).all(|(want, group)| {
+            group.len() == *want && group.chars().all(|c| c.is_ascii_hexdigit())
+        });
+    if !shaped {
+        return Err(err!(
+            InvalidArgument,
+            "{uuid:?} is not a UUID in canonical 8-4-4-4-12 hexadecimal form"
+        ));
+    }
+    // The version is the first character of the third group.
+    if !groups[2].starts_with('4') {
+        return Err(err!(
+            InvalidArgument,
+            "{uuid:?} is not a version 4 UUID, which the specification requires"
+        ));
+    }
+    Ok(())
 }
 
 /// A scalar property value, with the XISF type it is written as.

@@ -37,7 +37,9 @@ fn main() {
     a.id = Some("Light".into());
     a.image_type = Some(ImageType::MasterLight);
     a.orientation = Some(Orientation { rotation: 90, flip_horizontal: true });
-    a.uuid = Some("f81d4fae-7dec-11d0-a765-00a0c91e6bf6".into());
+    // A version 4 UUID: the third group starts with 4. The RFC's own example
+    // is version 1, which Revision 1 does not allow.
+    a.uuid = Some("2f1c8e6b-9a4d-4c7e-b3f5-6d80a1e42c9b".into());
     a.offset = Some(0.0);
 
     let thumb = img(2, 2, SampleFormat::UInt8, ColorSpace::Gray, 1);

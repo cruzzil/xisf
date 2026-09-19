@@ -399,3 +399,37 @@ fn a_null_character_may_not_occur_in_character_data() {
         Reader::from_bytes(unit(r#"<Property id="S" type="String">&#xD800;</Property>"#)).is_err()
     );
 }
+
+/// "Since the signature is placed after the XISF root element, a signed XISF
+/// header contains two top-level elements ... an XISF decoder built on such a
+/// processor must isolate the XISF root element before parsing it, and
+/// validate the signature separately."
+///
+/// Refusing it instead lost the whole file over an optional feature.
+#[test]
+fn a_signed_header_is_read_by_isolating_the_root_element() {
+    let xml = concat!(
+        r#"<xisf version="1.0" id="XISFRootElement" xmlns="http://www.pixinsight.com/xisf">"#,
+        r#"<Metadata/>"#,
+        r#"<Image geometry="2:2:1" sampleFormat="UInt8" location="attachment:512:4"/>"#,
+        r#"</xisf>"#,
+        r#"<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">"#,
+        r##"<SignedInfo><Reference URI="#XISFRootElement"/></SignedInfo>"##,
+        r#"<SignatureValue>Zm9v</SignatureValue>"#,
+        r#"</Signature>"#,
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    bytes.resize(512, 0);
+    bytes.extend_from_slice(&[1, 2, 3, 4]);
+
+    let reader = Reader::from_bytes(bytes).expect("a signed header should be readable");
+    assert_eq!(reader.header().images().len(), 1, "the signed unit's image was lost");
+    assert_eq!(&*reader.block(&reader.header().images()[0].data).expect("pixels"), &[1, 2, 3, 4]);
+
+    // The header text is returned unchanged, so nothing here invalidates the
+    // signature: "a signed XISF header must not be reformatted after signing".
+    assert!(reader.header_text().expect("text").contains("SignatureValue"));
+}
