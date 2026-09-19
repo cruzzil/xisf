@@ -25,6 +25,7 @@
 // `no_std` build and marks which parts genuinely need the platform.
 extern crate alloc;
 
+pub mod astrometry;
 pub mod block;
 pub mod codec;
 pub mod distributed;
