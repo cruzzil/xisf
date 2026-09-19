@@ -7,6 +7,81 @@ needs a breaking change the others do not.
 
 ## [Unreleased]
 
+A conformance audit against Revision 1, section by section, and the fixes it
+produced. The defects cluster in the revision's own Corrections list, which is
+what that list is: each entry describes something the original text got wrong
+or left ambiguous, and so marks a place an implementation written against it
+probably guessed.
+
+Almost every item below produced a wrong answer rather than an error.
+
+### Fixed — the reader returned wrong data
+
+- **A trailing field on a `compression` attribute was ignored.** The shape that
+  matters is `zlib:30000:4`, which is `zlib+sh:30000:4` with the `+sh` lost:
+  the block decompressed cleanly and the **still-shuffled bytes came back as
+  pixel data**, with nothing reporting a problem.
+- **Out-of-range decimals were reinterpreted as bit patterns**, so `Int8
+  value="200"` read as −56. The two's-complement reading belongs to radix
+  literals, which is where the specification introduces it; a decimal that does
+  not fit its type is now refused. Unsigned types are bounds-checked too, and
+  `Int128` hex literals get the reinterpretation that was skipped for the
+  widest type only.
+- **`ByteMatrix`, `IMatrix` and `UIMatrix` were rejected** — the only case
+  found where this decoder refused a file the schema accepts.
+- **`location="embedded:hex"` was read as base64.**
+- **A byte shuffling item size of 1 was refused** as "forbidden by the spec".
+  The specification says the opposite: "obviously a no-op for 8-bit data".
+- **Duplicate `uid`s and duplicate table field identifiers were accepted**,
+  both resolving to whichever came first — so an image silently acquired
+  another's colour working space, and a table column silently aliased another.
+- **A `value` attribute on a String property outranked its character data**,
+  though a String property may not carry one at all.
+- **U+0000 was admitted** in character data.
+
+### Fixed — the writer produced non-conforming files
+
+- **`<Thumbnail>` lost its `pixelStorage`**, so a `Normal` thumbnail read back
+  as `Planar` with its **colour channels silently shuffled**. Its `id`,
+  `uuid`, `imageType`, `offset` and `orientation` were dropped too.
+- **Floating point images were written without `bounds`**, leaving every
+  consumer to guess the black and white point.
+- **Empty table cells were written as `<Cell value=""/>`** — the exact
+  construct Revision 1 amended the specification's examples to forbid.
+- **ICC profiles were written with the embedded profile flag clear**, the one
+  alteration the specification requires.
+- **`.xisb` index elements recorded `uncompressedBlockLength = 0`** for
+  compressed blocks, which means "not compressed".
+- Image `id` and `uuid` are now validated; the showcase example was writing a
+  version 1 UUID.
+
+### Fixed — the reader looked at what it should ignore
+
+- **`images()` walked the whole tree**, so an `<Image>` inside a
+  foreign-namespace extension element was reported as a real image.
+- **`properties()` and `tables()` matched on local name only**, bypassing the
+  namespace check `images()` already used.
+- **External `path()`/`url()` blocks were followed from monolithic files**,
+  which §10.2 forbids — and which is a substitution channel a file's own
+  checksum cannot detect.
+- **Signed headers were refused outright.** A signed header has two top-level
+  elements, and the specification requires a decoder to "isolate the XISF root
+  element before parsing it". Refusing lost the whole file.
+
+### Added
+
+- `Writer::add_scalar_property` and `ScalarProperty`. A baseline encoder must
+  "write properties of all 8-bit, 16-bit, 32-bit and 64-bit scalar types"; the
+  writer could previously emit only strings.
+- `SampleFormat::requires_bounds` and `default_bounds`, `XisfFile::unavailable_images`,
+  `ThumbnailRef::pixel_storage`.
+- Seven tests for requirements whose violation is silent, two of them
+  mutation-checked. The sharpest gap: nothing exercised byte shuffling and
+  subblocks *together*, so unshuffling each subblock as it was decoded would
+  have passed the entire suite while scrambling every large shuffled block.
+  Chromatic L\*a\*b\* values are now pinned against `colour-science`, since
+  every previous colour test was invariant under swapping `a` and `b`.
+
 ### Added
 
 - **Colour space transformations (Annex B).** `xisf_core::color` implements

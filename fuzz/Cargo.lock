@@ -208,15 +208,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
-name = "ruzstd"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
 name = "sha1"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -280,17 +271,17 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "xisf-core"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "flate2",
  "lz4_flex",
  "memmap2",
  "quick-xml",
- "ruzstd",
  "sha1",
  "sha2",
  "sha3",
+ "zrip",
 ]
 
 [[package]]
@@ -306,3 +297,38 @@ name = "zlib-rs"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b268e58e7c693d7c271f93ffc4ba3b380412554231c85bf61ca7af91042a4112"
+
+[[package]]
+name = "zrip"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab0181a3ab0d61f30727381c20ebe7c0ed44edbaa1e279be39665f4d7b6d2168"
+dependencies = [
+ "zrip-core",
+ "zrip-decode",
+ "zrip-encode",
+]
+
+[[package]]
+name = "zrip-core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a91bc58032e884eb76396eaa2d6607db874dcf95e6752fb15401da494ab72ba7"
+
+[[package]]
+name = "zrip-decode"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d931c512bc14f368493e91df8570c5da60e2809e1d0c2cab906b6e4babbab84"
+dependencies = [
+ "zrip-core",
+]
+
+[[package]]
+name = "zrip-encode"
+version = "0.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8eb51ef0ac2bda5ff1381eccf970be2bf7cc431e44f0e7a4b8cdccf685fd6f7"
+dependencies = [
+ "zrip-core",
+]
