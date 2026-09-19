@@ -5,6 +5,46 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
+## [Unreleased]
+
+### Added
+
+- **Astrometric solutions evaluate.** `Solution::image_to_celestial` and
+  `Solution::celestial_to_image` turn pixels into positions on the sky and
+  back, using the highest layer present: a linear transformation, a projective
+  transformation, or that plus a radial basis function residual field. All
+  seven projection systems and the spherical rotation are implemented from
+  Annex A, and the distortion loader unpacks the shared Local term arrays.
+
+  0.4.0 could describe a solution but not evaluate one, because the published
+  specification renders every equation as an SVG of glyph outlines and none of
+  the mathematics was recoverable from the document as text.
+
+### Fixed
+
+- **`BasisFunction::VariableOrder` had a minimum order of 2; it is 3.** Table
+  17 is explicit, and the distinction matters: "a kernel of this family with
+  order 2 is a thin plate spline and shall use the ThinPlateSpline
+  identifier", so the two identifiers partition the family rather than
+  overlapping. 0.4.0 would have accepted an order-2 `VariableOrder` model that
+  should have been rejected.
+- Latitudes are computed through `atan2` of the sine against the modulus of
+  the longitude arguments rather than through `arcsin`, which is the robust
+  variant the specification recommends near the poles — and a zenithal
+  projection puts its reference point *at* the native pole, so the pixels
+  nearest the centre of an image are the worst-conditioned ones. The worst
+  round-trip error near the pole falls from 5.4e-7 pixels to 5.7e-11, against
+  a conformance tolerance of 1e-6.
+
+### Changed
+
+- **`ruzstd` is gone; `zrip` now does both directions.** One Zstandard
+  implementation instead of two, and `zrip::decompress_with_limit` bounds the
+  output natively rather than having to be told to. The cross-implementation
+  check this removes is replaced by a stronger one: the generated corpus
+  carries Zstandard files written by libXISF, which links the reference C
+  implementation, and decoding those is now an explicit test.
+
 ## [0.4.0] — 2026-09-19
 
 Brings the implementation up to Revision 1 of the XISF 1.0 specification

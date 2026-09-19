@@ -137,3 +137,43 @@ fn every_generated_file_reads_back_exactly() {
         assert_eq!(matched, files.len(), "every file should be readable in a full build");
     }
 }
+
+/// Zstandard blocks written by libXISF, which links the reference C
+/// implementation, must decode byte for byte.
+///
+/// This is the interoperability gate for the codec. While the crate carried
+/// two Zstandard implementations -- one encoding, one decoding -- the writer's
+/// round-trip matrix was itself a differential test between them. With a
+/// single implementation doing both directions that property is gone: a bug
+/// symmetric between its own encoder and decoder would round-trip perfectly
+/// and still write files nothing else can read. These files close that,
+/// and they close it better, because they come from the reference
+/// implementation rather than from another reimplementation of it.
+#[test]
+fn zstandard_blocks_from_the_reference_implementation_decode() {
+    let directory = corpus();
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&directory).expect("the generated corpus directory") {
+        let path = entry.expect("entry").path();
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if !name.contains("zstd") {
+            continue;
+        }
+
+        let reader = Reader::open(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let image = reader.header().images()[0];
+        let pixels = reader
+            .block(&image.data)
+            .unwrap_or_else(|e| panic!("{name}: a reference-written zstd block failed: {e}"));
+
+        let parsed = Image::parse(image).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            pixels.len() as u64,
+            parsed.data_size().expect("size"),
+            "{name}: decompressed to the wrong length"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no zstd file was found in the generated corpus");
+    eprintln!("{checked} reference-written Zstandard file(s) decoded");
+}

@@ -26,12 +26,11 @@ quick-xml = "0.38"
 base64 = "0.22"
 flate2 = "1"
 lz4_flex = "0.11"
-# Pure Rust rather than the `zstd` crate's C bindings: this keeps the whole
-# workspace free of a C toolchain, which matters for the six-platform CI and
-# lets Miri run, and zstd is not one of XISF 1.0's standard codecs anyway.
-ruzstd = "0.9"
-# The encoding half of Zstandard. Pure Rust, like `ruzstd`; `simd` is left off
-# so the codebase stays interpretable under Miri.
+# Zstandard, both directions. Pure Rust rather than the `zstd` crate's C
+# bindings: that keeps the whole workspace free of a C toolchain, which matters
+# for the six-platform CI and lets Miri run. `simd` is left off for the same
+# reason -- it is a decoder feature, and the codebase stays interpretable
+# without it.
 zrip = { version = "0.8", default-features = false, features = ["std", "frame"] }
 sha1 = "0.10"
 sha2 = "0.10"

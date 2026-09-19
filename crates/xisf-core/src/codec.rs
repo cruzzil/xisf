@@ -201,16 +201,12 @@ fn decompress(stored: &[u8], codec: &Codec, size: usize) -> Result<Vec<u8>> {
         Codec::Lz4 | Codec::Lz4Hc => {
             lz4_flex::block::decompress(stored, size).map_err(|e| err!(Compression, "lz4: {e}"))
         }
-        Codec::Zstd => {
-            use std::io::Read;
-            let mut out = Vec::with_capacity(size.min(MAX_PREALLOCATION));
-            ruzstd::decoding::StreamingDecoder::new(stored)
-                .map_err(|e| err!(Compression, "zstd: {e}"))?
-                .take(output_limit(size))
-                .read_to_end(&mut out)
-                .map_err(|e| err!(Compression, "zstd: {e}"))?;
-            Ok(out)
-        }
+        // `decompress_with_limit` bounds the output natively, which is what
+        // `output_limit` has to arrange by hand for the streaming decoders:
+        // the declared size plus one byte, enough to notice a block that
+        // produces more than it promised without letting it run away.
+        Codec::Zstd => zrip::decompress_with_limit(stored, output_limit(size) as usize)
+            .map_err(|e| err!(Compression, "zstd: {e}")),
         #[allow(unreachable_patterns)]
         other => Err(err!(Unsupported, "cannot decode {} blocks", other.name())),
     }

@@ -18,14 +18,11 @@ memmap2.workspace = true
 flate2 = { workspace = true, optional = true }
 lz4_flex = { workspace = true, optional = true }
 # Zstandard, which Revision 1 makes a standard codec and the recommended one,
-# so neither of these is optional. They are separate crates because they do
-# separate jobs: `ruzstd` decodes and `zrip` encodes. Decoding is the side
-# that faces hostile files, and `ruzstd` has orders of magnitude more use
-# behind it, so it keeps that job; `zrip` only ever compresses data we
-# produced ourselves. Both are pure Rust, which is what keeps this workspace
-# free of a C toolchain -- `zrip` depends on the reference implementation only
-# as a dev-dependency, to test its output against it.
-ruzstd.workspace = true
+# so this is not optional. `zrip` does both directions in pure Rust, which is
+# what keeps this workspace free of a C toolchain -- it depends on the
+# reference implementation only as a dev-dependency, to check its output
+# against it. Its `decompress_with_limit` also bounds the output natively,
+# which the streaming decoders have to be told to do by hand.
 zrip.workspace = true
 sha1.workspace = true
 sha2.workspace = true
