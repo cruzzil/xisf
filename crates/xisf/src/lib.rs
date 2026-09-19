@@ -43,6 +43,9 @@ pub use xisf_core::Reader;
 /// The `AstrometricSolution` property namespace: where an image is on the sky.
 pub use xisf_core::astrometry;
 pub use xisf_core::block::{ByteOrder, ChecksumAlgorithm, Codec, Compression, Location};
+/// Colour space transformations, as Annex B of the specification defines them.
+pub use xisf_core::color;
+pub use xisf_core::color::ColorTransform;
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::header::DataRef;
 pub use xisf_core::header::{Element, Header};
@@ -341,6 +344,25 @@ impl<'a> ImageRef<'a> {
     pub fn icc_profile(&self) -> Option<Result<Cow<'a, [u8]>>> {
         let element = *self.associated("ICCProfile").first()?;
         Some(self.file.reader.block(&element.data))
+    }
+
+    /// The colour transformations for this image's RGB working space.
+    ///
+    /// Annex B defines every transformation relative to the image's own
+    /// working space, so this uses the one the file declares, or sRGB when it
+    /// declares none -- which is the specification's default, not a guess.
+    ///
+    /// `None` only for a working space whose primaries are degenerate, which
+    /// Revision 1 says does not define a valid space at all.
+    ///
+    /// Components are nominal, in the `[0, 1]` range. Mapping an image's
+    /// samples onto that range is the caller's job, since it depends on the
+    /// sample format and on [`ImageRef::bounds`].
+    pub fn color_transform(&self) -> Option<ColorTransform> {
+        match self.rgb_working_space() {
+            Some(space) => ColorTransform::new(&space),
+            None => Some(ColorTransform::srgb()),
+        }
     }
 
     /// The image's astrometric solution: where it is on the sky.

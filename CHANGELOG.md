@@ -9,6 +9,16 @@ needs a breaking change the others do not.
 
 ### Added
 
+- **Colour space transformations (Annex B).** `xisf_core::color` implements
+  the transformations between RGB, CIE XYZ and CIE L*a*b*, and the
+  colorimetric grayscale component, relative to an image's own RGB working
+  space and the D50 reference white. Annex B is normative, and the crate
+  supported `CIELab` images while doing none of it.
+
+  Reachable as `ImageRef::color_transform`, which uses the working space the
+  file declares or sRGB when it declares none — the specification's default
+  rather than a guess. Components are nominal `[0, 1]` throughout, and results
+  are clipped to that range as the annex requires.
 - **Astrometric solutions evaluate.** `Solution::image_to_celestial` and
   `Solution::celestial_to_image` turn pixels into positions on the sky and
   back, using the highest layer present: a linear transformation, a projective

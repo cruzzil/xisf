@@ -163,7 +163,7 @@ impl Rotation {
 
 /// A latitude from its sine and the two longitude arguments, in degrees.
 ///
-/// `arcsin` is the obvious reading of equations [34] and [35], and it is a
+/// `arcsin` is the obvious reading of equations \[34\] and \[35\], and it is a
 /// poor one near the poles: its derivative is infinite at +-1, so an argument
 /// that has drifted by one ulp comes back displaced by far more. That matters
 /// here rather than in the abstract, because a zenithal projection puts its
@@ -184,7 +184,7 @@ fn robust_latitude(sine: f64, a: f64, b: f64) -> f64 {
     sine.atan2(a.hypot(b)).to_degrees()
 }
 
-/// Native spherical coordinates to celestial, equation [34].
+/// Native spherical coordinates to celestial, equation \[34\].
 pub fn native_to_celestial(native: [f64; 2], rotation: Rotation) -> [f64; 2] {
     let [phi, theta] = native;
     let [alpha_p, delta_p] = rotation.pole;
@@ -214,7 +214,7 @@ pub fn native_to_celestial(native: [f64; 2], rotation: Rotation) -> [f64; 2] {
     [reduce_ra(alpha), delta]
 }
 
-/// Celestial coordinates to native spherical, equation [35].
+/// Celestial coordinates to native spherical, equation \[35\].
 pub fn celestial_to_native(celestial: [f64; 2], rotation: Rotation) -> [f64; 2] {
     let [alpha, delta] = celestial;
     let [alpha_p, delta_p] = rotation.pole;

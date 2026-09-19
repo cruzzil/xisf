@@ -204,3 +204,36 @@ fn write_unit(extra: &str) -> Vec<u8> {
     bytes.extend_from_slice(&[1u8, 2, 3, 4]);
     bytes
 }
+
+/// Annex B's transformations run against the image's own working space, and
+/// against sRGB when the file declares none -- which is the specification's
+/// default rather than a guess.
+#[test]
+fn colour_transforms_use_the_images_own_working_space() {
+    // No RGBWorkingSpace declared: sRGB applies.
+    let file = XisfFile::from_bytes(write_unit("")).expect("read");
+    let transform = file.images()[0].color_transform().expect("sRGB is valid");
+    let [l, a, b] = transform.rgb_to_lab([1.0, 1.0, 1.0]);
+    assert!((l - 1.0).abs() < 1e-9, "white should be L = 1, got {l}");
+    assert!((a - 0.5).abs() < 1e-9 && (b - 0.5).abs() < 1e-9, "white is achromatic");
+
+    // A declared space with a pure exponent gamma behaves differently from
+    // sRGB's piecewise function, which is how we know the declaration is used.
+    let declared = write_unit(
+        r#"<RGBWorkingSpace x="0.648431:0.230154:0.155886" y="0.330856:0.701572:0.066044" Y="0.311114:0.625662:0.063224" gamma="2.2" name="Adobe RGB (1998)"/>"#,
+    );
+    let file = XisfFile::from_bytes(declared).expect("read");
+    let adobe = file.images()[0].color_transform().expect("valid space");
+    assert!(
+        (adobe.linearize(0.5) - transform.linearize(0.5)).abs() > 1e-3,
+        "the declared working space was ignored"
+    );
+
+    // Whatever the space, white is still white and the round trip still holds.
+    let [l, _, _] = adobe.rgb_to_lab([1.0, 1.0, 1.0]);
+    assert!((l - 1.0).abs() < 1e-9, "white should be L = 1 in any space, got {l}");
+    let back = adobe.lab_to_rgb(adobe.rgb_to_lab([0.3, 0.6, 0.45]));
+    for (got, want) in back.iter().zip([0.3, 0.6, 0.45]) {
+        assert!((got - want).abs() < 1e-9, "round trip gave {back:?}");
+    }
+}

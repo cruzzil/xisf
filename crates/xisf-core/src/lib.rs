@@ -28,6 +28,7 @@ extern crate alloc;
 pub mod astrometry;
 pub mod block;
 pub mod codec;
+pub mod color;
 pub mod distributed;
 pub mod error;
 pub mod header;

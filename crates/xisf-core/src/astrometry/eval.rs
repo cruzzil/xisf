@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 use super::projection::{Rotation, deproject, project};
 use super::{Direction, DistortionDirection, Solution};
 
-/// Apply a 3x3 projective transformation to a point, equation [24].
+/// Apply a 3x3 projective transformation to a point, equation \[24\].
 ///
 /// `(u', v', w')^T = P (x, y, 1)^T`, then `(u, v) = (u'/w', v'/w')`. A `w'`
 /// of zero is a point the transformation sends to infinity, which has no
@@ -40,7 +40,7 @@ pub(super) fn projective(matrix: &[[f64; 3]; 3], point: [f64; 2]) -> Option<[f64
 }
 
 impl DistortionDirection {
-    /// The residual field at a point, equation [25].
+    /// The residual field at a point, equation \[25\].
     ///
     /// `R_D(p) = sum_i w_i(p) S_i(p) / sum_i w_i(p)`, over whichever kinds of
     /// term the direction carries.
