@@ -225,6 +225,29 @@ jobs:
           ./scripts/validate-headers.sh \
             corpus/pixinsight/*.xisf corpus/generated/*.xisf showcase.xisf
 
+  # Check the projections and the spherical rotation against wcslib, which the
+  # specification defers to: "In case of discrepancy, the WCS formulation is
+  # the normative reference", and wcslib is that paper's own reference
+  # implementation.
+  #
+  # Every other test of these formulas is self-consistency -- round trips, and
+  # inverses agreeing with their forwards -- and none of those can catch a
+  # formula that is wrong the same way in both directions.
+  wcs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install astropy
+        run: pip install --quiet astropy
+      - name: Compare against wcslib
+        run: |
+          cargo run --quiet --example wcs-dump -p xisf-core | python scripts/check-wcs.py
+
   lint:
     runs-on: ubuntu-latest
     steps:
