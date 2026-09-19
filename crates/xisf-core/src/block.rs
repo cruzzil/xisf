@@ -86,7 +86,19 @@ impl Location {
             // The encoding lives on the child `<Data>` element, which the
             // parser fills in once it reaches it; base64 is the default for
             // a file that omits the attribute the schema requires.
-            "embedded" => Ok(Location::Embedded { encoding: TextEncoding::Base64 }),
+            "embedded" => {
+                // The grammar is the bare word. Accepting a suffix would read
+                // `embedded:hex` -- a plausible mistake, since `inline` does
+                // take an encoding -- as base64 and hand back garbage.
+                if let Some(rest) = rest {
+                    return Err(err!(
+                        BadAttribute,
+                        "an embedded location takes no parameters, got {rest:?}; \
+                         the encoding belongs on the <Data> element"
+                    ));
+                }
+                Ok(Location::Embedded { encoding: TextEncoding::Base64 })
+            }
             "inline" => {
                 let encoding = match rest {
                     Some("base64") => TextEncoding::Base64,
@@ -312,22 +324,44 @@ impl Compression {
             .ok_or_else(|| err!(BadAttribute, "compression needs an uncompressed size"))
             .and_then(|s| parse_u64(s, "uncompressed size"))?;
 
+        // Nothing may follow. A `compression="zlib:30000:4"` -- a `+sh` lost
+        // from `zlib+sh:30000:4` -- otherwise parsed as unshuffled and handed
+        // back still-shuffled bytes as pixel data, with no error anywhere.
+        let mut fields = fields.peekable();
         let shuffle_item_size = match (shuffled, fields.next()) {
             (true, Some(item)) => {
                 let size = parse_u64(item, "shuffle item size")?;
-                if size < 2 {
-                    return Err(err!(
-                        BadAttribute,
-                        "a shuffled block needs an item size of 2 or more, got {size}"
-                    ));
-                }
+                // An item size of 1 is legal: the specification calls the
+                // algorithm "obviously a no-op for 8-bit data" rather than
+                // forbidding it, and an encoder that passes the sample width
+                // of a UInt8 image emits exactly that. Refusing it rejected a
+                // schema-valid file. `unshuffle` already treats it as a no-op.
                 Some(size)
             }
             (true, None) => {
                 return Err(err!(BadAttribute, "a shuffled block must state its item size"));
             }
-            (false, _) => None,
+            // Nothing may follow the uncompressed size when the codec is not
+            // shuffled. A `+sh` lost from `zlib+sh:30000:4` leaves exactly
+            // this shape, and letting it through returned still-shuffled
+            // bytes as pixel data with no error anywhere.
+            (false, Some(extra)) => {
+                return Err(err!(
+                    BadAttribute,
+                    "a compression attribute has trailing field {extra:?}; \
+                     byte shuffling is requested with a +sh suffix on the codec"
+                ));
+            }
+            (false, None) => None,
         };
+
+        if let Some(extra) = fields.next() {
+            return Err(err!(
+                BadAttribute,
+                "a compression attribute has trailing field {extra:?}; \
+                 byte shuffling is requested with a +sh suffix on the codec"
+            ));
+        }
 
         Ok(Compression { codec, uncompressed_size, shuffle_item_size, subblocks: Vec::new() })
     }
@@ -441,6 +475,7 @@ fn parse_u64(text: &str, what: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ErrorKind;
 
     #[test]
     fn locations_parse() {
@@ -570,8 +605,41 @@ mod tests {
     #[test]
     fn a_shuffled_block_must_say_how_wide_its_items_are() {
         assert!(Compression::parse("zlib+sh:30000").is_err());
-        // An item size of 1 shuffles nothing, so the spec does not allow it.
-        assert!(Compression::parse("zlib+sh:30000:1").is_err());
+    }
+
+    /// An item size of 1 is legal. The specification calls the algorithm
+    /// "obviously a no-op for 8-bit data" rather than forbidding it, and an
+    /// encoder that passes the sample width of a UInt8 image emits exactly
+    /// that -- so refusing it rejected a schema-valid file.
+    #[test]
+    fn an_item_size_of_one_is_a_no_op_rather_than_an_error() {
+        let parsed = Compression::parse("zlib+sh:30000:1").expect("item size 1 is legal");
+        assert_eq!(parsed.shuffle_item_size, Some(1));
+        // And it must behave as the no-op the spec says it is.
+        assert_eq!(crate::codec::unshuffle(&[1, 2, 3, 4, 5], 1), vec![1, 2, 3, 4, 5]);
+    }
+
+    /// A `+sh` lost from `zlib+sh:30000:4` leaves `zlib:30000:4`, which used
+    /// to parse as unshuffled and hand back still-shuffled bytes as pixel
+    /// data. Nothing may follow the uncompressed size.
+    #[test]
+    fn a_trailing_field_after_the_uncompressed_size_is_refused() {
+        assert_eq!(Compression::parse("zlib:30000").unwrap().shuffle_item_size, None);
+        for bad in ["zlib:30000:4", "zstd:100:4:9", "lz4:1:2"] {
+            let err = Compression::parse(bad).unwrap_err();
+            assert_eq!(err.kind(), ErrorKind::BadAttribute, "{bad} was accepted");
+            assert!(err.message().contains("+sh"), "{}", err.message());
+        }
+    }
+
+    /// `embedded` is the bare word. `embedded:hex` is a plausible mistake --
+    /// `inline` does take an encoding -- and reading it as base64 returns
+    /// garbage rather than an error.
+    #[test]
+    fn an_embedded_location_takes_no_parameters() {
+        assert!(Location::parse("embedded:hex").is_err());
+        assert!(Location::parse("embedded:").is_err());
+        assert!(Location::parse("embedded").is_ok());
     }
 
     #[test]

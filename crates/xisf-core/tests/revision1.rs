@@ -254,3 +254,65 @@ fn image_types_are_recognised_and_unknown_ones_preserved() {
         assert_eq!(image.image_type.unwrap().name(), text, "{text} did not round-trip its name");
     }
 }
+
+/// A decimal literal that does not fit its declared type is out of range, not
+/// a bit pattern. Reading `Int8 value="200"` as -56 invents a number the file
+/// does not contain, and nothing downstream can tell.
+///
+/// Radix literals are different, and the specification says so: "if the
+/// represented value is a two's complement signed 32-bit integer, the value
+/// is 80E950AB = -2132193109". That reinterpretation is for radix literals
+/// only.
+#[test]
+fn an_out_of_range_decimal_is_refused_but_a_radix_literal_is_two_s_complement() {
+    use xisf_core::property::{Property, ScalarValue};
+
+    let value_of = |kind: &str, text: &str| -> Option<ScalarValue> {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Property id="V" type="{kind}" value="{text}"/>"#
+        )))
+        .expect("header");
+        Property::parse(by_id(&reader, "V")).expect("parse").value()
+    };
+
+    // Out of range, in decimal: refused.
+    assert_eq!(value_of("Int8", "200"), None, "200 does not fit an Int8");
+    assert_eq!(value_of("Int8", "-200"), None);
+    assert_eq!(value_of("UInt8", "256"), None);
+    assert_eq!(value_of("Int32", "3000000000"), None);
+    assert_eq!(value_of("UInt16", "70000"), None);
+
+    // In range: read as written.
+    assert_eq!(value_of("Int8", "127"), Some(ScalarValue::Signed(127)));
+    assert_eq!(value_of("Int8", "-128"), Some(ScalarValue::Signed(-128)));
+    assert_eq!(value_of("UInt8", "255"), Some(ScalarValue::Unsigned(255)));
+    assert_eq!(value_of("Int32", "0"), Some(ScalarValue::Signed(0)));
+
+    // The specification's own example, and the same rule at other widths.
+    assert_eq!(value_of("Int32", "0x80E950AB"), Some(ScalarValue::Signed(-2132193109)));
+    assert_eq!(value_of("UInt32", "0x80E950AB"), Some(ScalarValue::Unsigned(2162774187)));
+    assert_eq!(value_of("Int8", "0xFF"), Some(ScalarValue::Signed(-1)));
+    assert_eq!(value_of("Int64", "0xFFFFFFFFFFFFFFFF"), Some(ScalarValue::Signed(-1)));
+}
+
+/// Table 8 gives a whole-name alias for every vector type and every matrix
+/// type. The matrix ones were missing, which made three schema-valid type
+/// names unreadable -- the only case where this decoder refused a valid file.
+#[test]
+fn every_whole_name_type_alias_is_understood() {
+    use xisf_core::property::PropertyType;
+
+    for (alias, canonical) in [
+        ("ByteArray", "UI8Vector"),
+        ("IVector", "I32Vector"),
+        ("UIVector", "UI32Vector"),
+        ("Vector", "F64Vector"),
+        ("ByteMatrix", "UI8Matrix"),
+        ("IMatrix", "I32Matrix"),
+        ("UIMatrix", "UI32Matrix"),
+        ("Matrix", "F64Matrix"),
+    ] {
+        let parsed = PropertyType::parse(alias).unwrap_or_else(|e| panic!("{alias}: {e}"));
+        assert_eq!(parsed.name(), canonical, "{alias}");
+    }
+}

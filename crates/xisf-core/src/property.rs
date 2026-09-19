@@ -160,6 +160,12 @@ impl PropertyType {
             "IVector" => Some((Shape::Vector, Scalar::Int32)),
             "UIVector" => Some((Shape::Vector, Scalar::UInt32)),
             "Vector" => Some((Shape::Vector, Scalar::Float64)),
+            // The matrix counterparts. Table 8 gives all three, and leaving
+            // them out made three schema-valid type names unreadable -- the
+            // only case where this decoder refused a valid file.
+            "ByteMatrix" => Some((Shape::Matrix, Scalar::UInt8)),
+            "IMatrix" => Some((Shape::Matrix, Scalar::Int32)),
+            "UIMatrix" => Some((Shape::Matrix, Scalar::UInt32)),
             "Matrix" => Some((Shape::Matrix, Scalar::Float64)),
             _ => None,
         };
@@ -567,7 +573,7 @@ impl ScalarValue {
 /// The result is the bit pattern the digits denote. Whether it is read as
 /// signed or unsigned is the declared type's business, not the literal's:
 /// `0x80E950AB` denotes the same thirty-two bits either way.
-fn parse_radix(text: &str) -> Option<(u128, bool)> {
+fn parse_radix(text: &str) -> Option<(u128, bool, u32)> {
     let text = text.trim();
     let (negative, digits) = match text.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -583,7 +589,21 @@ fn parse_radix(text: &str) -> Option<(u128, bool)> {
     if digits.is_empty() {
         return None;
     }
-    u128::from_str_radix(digits, radix).ok().map(|value| (value, negative))
+    u128::from_str_radix(digits, radix).ok().map(|value| (value, negative, radix))
+}
+
+/// The inclusive bounds of a signed integer of `width` bits.
+fn signed_bounds(width: u32) -> (i128, i128) {
+    if width >= 128 {
+        (i128::MIN, i128::MAX)
+    } else {
+        (-(1i128 << (width - 1)), (1i128 << (width - 1)) - 1)
+    }
+}
+
+/// The largest value an unsigned integer of `width` bits can hold.
+fn unsigned_max(width: u32) -> u128 {
+    if width >= 128 { u128::MAX } else { (1u128 << width) - 1 }
 }
 
 /// Parse a floating point value the way the specification serialises one.
@@ -629,24 +649,42 @@ impl Property {
             }
 
             Scalar::Int8 | Scalar::Int16 | Scalar::Int32 | Scalar::Int64 | Scalar::Int128 => {
-                let (magnitude, negative) = parse_radix(text)?;
-                let width = scalar.size()? * 8;
+                let (magnitude, negative, radix) = parse_radix(text)?;
+                let width = (scalar.size()? * 8) as u32;
+                let (low, high) = signed_bounds(width);
+
                 let signed = if negative {
-                    i128::try_from(magnitude).ok()?.checked_neg()?
-                } else if width < 128 && magnitude >= (1u128 << (width - 1)) {
-                    // A literal that fills the width, like the spec's own
-                    // `0x80E950AB` as an Int32, denotes a negative number in
-                    // two's complement rather than being out of range.
-                    (magnitude as i128) - (1i128 << width)
+                    let value = i128::try_from(magnitude).ok()?.checked_neg()?;
+                    (value >= low).then_some(value)?
+                } else if radix != 10 && magnitude > high as u128 {
+                    // A *radix* literal that fills the width, like the spec's
+                    // own `0x80E950AB` as an Int32, denotes a negative number
+                    // in two's complement: "if the represented value is a
+                    // two's complement signed 32-bit integer, the value is
+                    // 80E950AB = -2132193109".
+                    //
+                    // Only for radix literals. A decimal that exceeds the
+                    // type is out of range, not a bit pattern -- reading
+                    // `Int8 value="200"` as -56 would invent a number the
+                    // file does not contain.
+                    if magnitude > unsigned_max(width) {
+                        return None;
+                    }
+                    if width >= 128 {
+                        magnitude as i128
+                    } else {
+                        (magnitude as i128) - (1i128 << width)
+                    }
                 } else {
-                    i128::try_from(magnitude).ok()?
+                    let value = i128::try_from(magnitude).ok()?;
+                    (value <= high).then_some(value)?
                 };
                 ScalarValue::Signed(signed)
             }
 
             Scalar::UInt8 | Scalar::UInt16 | Scalar::UInt32 | Scalar::UInt64 | Scalar::UInt128 => {
-                let (magnitude, negative) = parse_radix(text)?;
-                if negative {
+                let (magnitude, negative, _) = parse_radix(text)?;
+                if negative || magnitude > unsigned_max((scalar.size()? * 8) as u32) {
                     return None;
                 }
                 ScalarValue::Unsigned(magnitude)
