@@ -86,9 +86,37 @@ impl XisfFile {
             .images()
             .into_iter()
             .filter_map(|element| {
+                // An image whose attributes this build cannot make sense of --
+                // a sampleFormat outside Table 11, say -- is dropped from this
+                // list, which renumbers everything after it. The specification
+                // asks for the opposite: an unsupported object "shall be
+                // treated as unavailable" while "the rest of the XISF unit
+                // must remain accessible", and a caller indexing images() has
+                // no way to know a position moved.
+                //
+                // Replacing this needs an ImageRef that can hold an
+                // uninterpretable image, which is an API change rather than a
+                // filter change; until then `unavailable_images` reports how
+                // many were dropped so a caller can at least notice.
                 Image::parse(element).ok().map(|image| ImageRef { file: self, element, image })
             })
             .collect()
+    }
+
+    /// How many `<Image>` elements the header declares that this build cannot
+    /// interpret, and which are therefore missing from [`XisfFile::images`].
+    ///
+    /// Non-zero means the positions in that list do not correspond to the
+    /// positions in the file. It is reported rather than hidden because a
+    /// caller reaching for `images()[1]` would otherwise silently get a
+    /// different frame than the header's second one.
+    pub fn unavailable_images(&self) -> usize {
+        self.reader
+            .header()
+            .images()
+            .into_iter()
+            .filter(|element| Image::parse(element).is_err())
+            .count()
     }
 
     /// The file's properties, wherever in the header they appear.

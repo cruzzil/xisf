@@ -304,3 +304,64 @@ fn character_data_outranks_a_forbidden_value_attribute() {
     let property = file.property("S").expect("the property");
     assert_eq!(property.as_str(), Some("right"), "the forbidden value attribute won");
 }
+
+/// A baseline encoder must "write properties of all 8-bit, 16-bit, 32-bit and
+/// 64-bit scalar types". Until `add_scalar_property` existed the only property
+/// this writer could emit was a string, so a caller had no way to record an
+/// exposure time as a Float32 without writing the number out as text under a
+/// type that says it is text.
+///
+/// Each value must also read back as itself, which is what says the plain text
+/// serialization and the type agree.
+#[test]
+fn every_baseline_scalar_type_round_trips_through_the_writer() {
+    use xisf_core::property::ScalarValue;
+    use xisf_core::writer::{BlockOptions, PendingImage, ScalarProperty, Writer};
+
+    let cases: Vec<(&str, ScalarProperty, ScalarValue)> = vec![
+        ("B", ScalarProperty::Boolean(true), ScalarValue::Bool(true)),
+        ("I8", ScalarProperty::Int8(-128), ScalarValue::Signed(-128)),
+        ("U8", ScalarProperty::UInt8(255), ScalarValue::Unsigned(255)),
+        ("I16", ScalarProperty::Int16(-32768), ScalarValue::Signed(-32768)),
+        ("U16", ScalarProperty::UInt16(65535), ScalarValue::Unsigned(65535)),
+        ("I32", ScalarProperty::Int32(-2147483648), ScalarValue::Signed(-2147483648)),
+        ("U32", ScalarProperty::UInt32(4294967295), ScalarValue::Unsigned(4294967295)),
+        ("I64", ScalarProperty::Int64(i64::MIN), ScalarValue::Signed(i64::MIN as i128)),
+        ("U64", ScalarProperty::UInt64(u64::MAX), ScalarValue::Unsigned(u64::MAX as u128)),
+        ("F32", ScalarProperty::Float32(0.5), ScalarValue::Float(0.5)),
+        ("F64", ScalarProperty::Float64(-1.25e-3), ScalarValue::Float(-1.25e-3)),
+    ];
+
+    use xisf_core::image::{ColorSpace, Image, PixelStorage, SampleFormat};
+
+    let mut writer = Writer::new();
+    for (id, value, _) in &cases {
+        writer.add_scalar_property(*id, *value).expect("add_scalar_property");
+    }
+    let image = Image {
+        dimensions: vec![2, 2],
+        channels: 1,
+        sample_format: SampleFormat::UInt8,
+        color_space: ColorSpace::Gray,
+        pixel_storage: PixelStorage::Planar,
+        bounds: None,
+        id: None,
+        uuid: None,
+        image_type: None,
+        offset: None,
+        orientation: None,
+    };
+    writer
+        .add_image(PendingImage::new(image, vec![0; 4], BlockOptions::default()))
+        .expect("add_image");
+
+    let file = XisfFile::from_bytes(writer.to_bytes().expect("write")).expect("read back");
+    for (id, _, expected) in &cases {
+        let property = file.property(id).unwrap_or_else(|| panic!("{id} is missing"));
+        assert_eq!(
+            property.attributes().value(),
+            Some(*expected),
+            "{id} did not survive the round trip"
+        );
+    }
+}

@@ -289,6 +289,30 @@ impl Writer {
         Ok(())
     }
 
+    /// Add a scalar property to the file's `<Metadata>`.
+    ///
+    /// A baseline encoder must "write properties of all 8-bit, 16-bit, 32-bit
+    /// and 64-bit scalar types", and until this existed the only property this
+    /// writer could emit was a string -- so a caller had no way to record an
+    /// exposure time as a `Float32` or a gain as an `Int32` without writing
+    /// the number out as text under a type that says it is text.
+    ///
+    /// The value is serialized as the specification's plain text for its type,
+    /// and is checked against the declared type before it is accepted, so a
+    /// value that does not fit is refused here rather than read back as a
+    /// different number.
+    pub fn add_scalar_property(
+        &mut self,
+        id: impl Into<String>,
+        value: ScalarProperty,
+    ) -> Result<()> {
+        let id = id.into();
+        check_property_id(&id)?;
+        let (kind, text) = value.serialize();
+        self.metadata.push((id, kind.into(), text));
+        Ok(())
+    }
+
     /// Add a table property describing the unit as a whole.
     pub fn add_table(&mut self, table: Table) -> Result<()> {
         check_table(&table)?;
@@ -788,12 +812,26 @@ impl Writer {
         }
 
         for (id, kind, value) in &self.metadata {
-            xml.push_str(&format!(
-                "<Property id=\"{}\" type=\"{}\">{}</Property>",
-                escape_attr(id),
-                escape_attr(kind),
-                escape_text(value)
-            ));
+            // A String property "shall not have a value attribute, and must
+            // serialize the property value either directly in its character
+            // data contents, or as an XISF data block"; every other scalar
+            // carries its value in the attribute. Writing a scalar as
+            // character data, or a string as an attribute, is the wrong shape
+            // for both.
+            if kind == "String" {
+                xml.push_str(&format!(
+                    "<Property id=\"{}\" type=\"String\">{}</Property>",
+                    escape_attr(id),
+                    escape_text(value)
+                ));
+            } else {
+                xml.push_str(&format!(
+                    "<Property id=\"{}\" type=\"{}\" value=\"{}\"/>",
+                    escape_attr(id),
+                    escape_attr(kind),
+                    escape_attr(value)
+                ));
+            }
         }
         xml.push_str(&format!(
             "<Property id=\"XISF:CreatorApplication\" type=\"String\">{}</Property>",
@@ -1175,6 +1213,50 @@ fn compress(data: &[u8], codec: Codec2) -> Result<Vec<u8>> {
         Codec2::Zstd => zrip::compress(data, 3).map_err(|e| err!(Compression, "zstd: {e}")),
         #[allow(unreachable_patterns)]
         other => Err(err!(Unsupported, "cannot write {:?} blocks in this build", other)),
+    }
+}
+
+/// A scalar property value, with the XISF type it is written as.
+///
+/// The set is the one a baseline encoder is required to write -- "properties
+/// of all 8-bit, 16-bit, 32-bit and 64-bit scalar types" -- plus Boolean,
+/// which costs nothing to include and is otherwise unwritable.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ScalarProperty {
+    Boolean(bool),
+    Int8(i8),
+    UInt8(u8),
+    Int16(i16),
+    UInt16(u16),
+    Int32(i32),
+    UInt32(u32),
+    Int64(i64),
+    UInt64(u64),
+    Float32(f32),
+    Float64(f64),
+}
+
+impl ScalarProperty {
+    /// The XISF type name and the plain text serialization of the value.
+    fn serialize(self) -> (&'static str, String) {
+        match self {
+            // "A serialization of a Boolean value as plain text shall be one
+            // of the words true and false."
+            ScalarProperty::Boolean(v) => ("Boolean", v.to_string()),
+            ScalarProperty::Int8(v) => ("Int8", v.to_string()),
+            ScalarProperty::UInt8(v) => ("UInt8", v.to_string()),
+            ScalarProperty::Int16(v) => ("Int16", v.to_string()),
+            ScalarProperty::UInt16(v) => ("UInt16", v.to_string()),
+            ScalarProperty::Int32(v) => ("Int32", v.to_string()),
+            ScalarProperty::UInt32(v) => ("UInt32", v.to_string()),
+            ScalarProperty::Int64(v) => ("Int64", v.to_string()),
+            ScalarProperty::UInt64(v) => ("UInt64", v.to_string()),
+            // Rust prints `NaN`, `inf` and `-inf`, all of which the
+            // specification names as valid serializations of the non-finite
+            // values.
+            ScalarProperty::Float32(v) => ("Float32", v.to_string()),
+            ScalarProperty::Float64(v) => ("Float64", v.to_string()),
+        }
     }
 }
 

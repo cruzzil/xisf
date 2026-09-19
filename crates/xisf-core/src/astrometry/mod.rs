@@ -21,18 +21,20 @@
 //! rests on it. Those rules are encoded in [`Availability`] rather than left
 //! to each caller to rediscover.
 //!
-//! # What this module does not do
+//! # Evaluating a solution
 //!
-//! It models and validates a solution; it does not *evaluate* one. Turning a
-//! pixel into a right ascension needs the deprojection, spherical rotation and
-//! spline arithmetic, and the specification requires two implementations to
-//! agree "to within 10^-6 pixels in image coordinates". The formulas for those
-//! steps live in Annex A, which the specification marks *informative*, and
-//! which restates the WCS paper; the normative reference is the WCS paper
-//! itself. Shipping unverified numerics under an astrometric API would be
-//! worse than shipping none: a solution that is subtly wrong puts objects in
-//! the wrong place silently, which is the one failure this library's users
-//! cannot afford to have hidden from them.
+//! [`Solution::image_to_celestial`] and [`Solution::celestial_to_image`] turn
+//! a pixel into a position on the sky and back, using the highest layer
+//! present. The specification requires two implementations to agree "to within
+//! 10^-6 pixels in image coordinates"; the projection and spherical rotation
+//! steps are checked against wcslib, which is the reference implementation of
+//! the WCS paper the specification defers to, and agree to about 1e-9 pixels.
+//!
+//! What is *not* verified against anything outside this crate is the
+//! distortion model, layers 2 and 3. There is no independent implementation of
+//! it -- the projective-plus-spline model is XISF's own -- and the corpus
+//! contains no solved image, so those layers are covered by construction and
+//! by round trips rather than by an oracle.
 
 use alloc::collections::BTreeMap;
 
