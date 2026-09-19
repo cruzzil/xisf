@@ -284,3 +284,23 @@ fn float_and_boolean_properties_decode_in_every_spelling() {
     let file = XisfFile::from_bytes(bytes).expect("read");
     assert_eq!(file.property("v").expect("v").value(), None);
 }
+
+/// "A Property element serializing a String property shall not have a value
+/// attribute, and must serialize the property value either directly in its
+/// character data contents, or as an XISF data block."
+///
+/// A file carrying one anyway is malformed, and the malformed half must not
+/// win: preferring it let a crafted file make a property read back as
+/// something other than its own contents.
+#[test]
+fn character_data_outranks_a_forbidden_value_attribute() {
+    let xml = r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/><Property id="S" type="String" value="wrong">right</Property></xisf>"#;
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let file = XisfFile::from_bytes(bytes).expect("read");
+    let property = file.property("S").expect("the property");
+    assert_eq!(property.as_str(), Some("right"), "the forbidden value attribute won");
+}

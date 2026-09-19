@@ -5,6 +5,8 @@
 //! *not* do is interpret data: a [`DataRef`] says where bytes are and what has
 //! been done to them, and resolving that is the reader's job.
 
+use alloc::collections::BTreeSet;
+
 use quick_xml::NsReader;
 use quick_xml::events::Event;
 use quick_xml::name::ResolveResult;
@@ -311,6 +313,26 @@ pub fn parse(xml: &str) -> Result<Header> {
             root.namespace.as_deref().unwrap_or("(none)")
         ));
     }
+    // "A unique element identifier must be unique in an XISF unit, i.e., no
+    // two XISF core elements can be assigned the same unique element
+    // identifier." A duplicate is not a cosmetic breach: a Reference resolves
+    // to whichever came first in document order, so an image silently gets
+    // another image's colour working space, ICC profile, CFA pattern or
+    // thumbnail, and is then rendered or demosaiced with the wrong one.
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for element in root.descendants() {
+        let Some(uid) = element.attr("uid") else { continue };
+        if !element.is_core() {
+            continue;
+        }
+        if !seen.insert(uid) {
+            return Err(err!(
+                BadHeader,
+                "two core elements share the unique element identifier {uid:?}"
+            ));
+        }
+    }
+
     let version = root.attr("version").unwrap_or_default().to_string();
     if version != "1.0" {
         return Err(err!(Unsupported, "XISF version {version:?} is not supported"));
@@ -354,6 +376,15 @@ fn resolve_entity(name: &str) -> Option<String> {
                 Some(hex) => u32::from_str_radix(hex, 16).ok()?,
                 None => digits.parse::<u32>().ok()?,
             };
+            // "The Unicode code point U+0000 (NULL control character) shall
+            // not occur in a string property." It is also not a legal XML 1.0
+            // character, so this is malformed on two counts -- and a NUL
+            // reaching a C consumer through the FFI truncates the string.
+            if code == 0 {
+                return None;
+            }
+            // `from_u32` already rejects the surrogates, which "cannot be
+            // encoded in UTF-8".
             char::from_u32(code)?.to_string()
         }
     })

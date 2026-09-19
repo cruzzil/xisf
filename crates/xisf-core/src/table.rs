@@ -65,6 +65,21 @@ impl Structure {
         if fields.is_empty() {
             return Err(err!(BadHeader, "a <Structure> must have at least one <Field>"));
         }
+        // "Field property identifiers must be unique, i.e., two or more fields
+        // pertaining to the same table cannot have the same property
+        // identifier." A column is found by the position of the first field
+        // with a given id, so a duplicate makes the second column permanently
+        // unreachable and hands its values to whoever asks for the first --
+        // right ascensions read as declinations, and the table looks whole.
+        for (index, field) in fields.iter().enumerate() {
+            if fields[..index].iter().any(|earlier| earlier.id == field.id) {
+                return Err(err!(
+                    BadHeader,
+                    "two fields of a <Structure> share the identifier {:?}",
+                    field.id
+                ));
+            }
+        }
         Ok(Structure { uid: element.attr("uid").map(str::to_owned), fields })
     }
 }
@@ -96,11 +111,18 @@ impl Cell {
     /// The cell's textual value, if it has one in the header.
     ///
     /// `None` means the value is in a data block, not that the cell is empty.
+    ///
+    /// Character data is preferred over a `value` attribute. A cell
+    /// "serializes its corresponding table cell value exactly as a Property
+    /// element serializing an XISF property of the corresponding field type",
+    /// and a String property "shall not have a value attribute" -- which
+    /// Revision 1 corrected the specification's own table examples for. So a
+    /// `value` on a string cell is the malformed half and must not win.
     pub fn as_str(&self) -> Option<&str> {
         if self.data.location.is_some() {
             return None;
         }
-        self.value.as_deref().or(self.data.text.as_deref())
+        self.data.text.as_deref().or(self.value.as_deref())
     }
 }
 

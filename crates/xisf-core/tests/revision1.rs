@@ -349,3 +349,53 @@ fn a_monolithic_file_may_not_reference_an_external_block() {
         assert!(err.message().contains("monolithic"), "{}", err.message());
     }
 }
+
+/// "A unique element identifier must be unique in an XISF unit."
+///
+/// A duplicate is not cosmetic: a `<Reference>` resolves to whichever element
+/// came first in document order, so an image silently acquires another
+/// image's colour working space, ICC profile or CFA pattern and is rendered
+/// or demosaiced with the wrong one.
+#[test]
+fn two_core_elements_may_not_share_a_unique_element_identifier() {
+    let err = Reader::from_bytes(unit(
+        r#"<Resolution uid="X" horizontal="300" vertical="300"/><Resolution uid="X" horizontal="72" vertical="72"/>"#,
+    ))
+    .expect_err("a duplicate uid was accepted");
+    assert_eq!(err.kind(), ErrorKind::BadHeader);
+    assert!(err.message().contains("\"X\""), "{}", err.message());
+
+    // Across different kinds of element too: the rule is over all core
+    // elements, not within one kind.
+    assert!(
+        Reader::from_bytes(unit(
+            r#"<Resolution uid="Y" horizontal="72" vertical="72"/><Thumbnail uid="Y" geometry="2:2:1" sampleFormat="UInt8" location="attachment:200:4"/>"#
+        ))
+        .is_err(),
+        "a uid shared across element kinds was accepted"
+    );
+
+    // And distinct identifiers must still be fine.
+    assert!(
+        Reader::from_bytes(unit(
+            r#"<Resolution uid="A" horizontal="72" vertical="72"/><Resolution uid="B" horizontal="300" vertical="300"/>"#
+        ))
+        .is_ok()
+    );
+}
+
+/// "The Unicode code point U+0000 (NULL control character) shall not occur in
+/// a string property." It is not a legal XML 1.0 character either, and a NUL
+/// reaching a C consumer through the FFI truncates the string there.
+#[test]
+fn a_null_character_may_not_occur_in_character_data() {
+    let err =
+        Reader::from_bytes(unit(r#"<Property id="S" type="String">before&#0;after</Property>"#))
+            .expect_err("U+0000 was accepted");
+    assert_eq!(err.kind(), ErrorKind::BadHeader);
+
+    // A surrogate cannot be encoded in UTF-8 and is refused for that reason.
+    assert!(
+        Reader::from_bytes(unit(r#"<Property id="S" type="String">&#xD800;</Property>"#)).is_err()
+    );
+}

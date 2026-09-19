@@ -330,3 +330,41 @@ fn the_subblocks_attribute_is_read_and_requires_compression() {
         assert!(parse(&xml).is_err(), "accepted: {bad}");
     }
 }
+
+/// "Field property identifiers must be unique, i.e., two or more fields
+/// pertaining to the same table cannot have the same property identifier."
+///
+/// A column is found by the position of the first field with a given id, so a
+/// duplicate makes the second column permanently unreachable and hands its
+/// values to whoever asks for the first: right ascensions read as
+/// declinations, with the table looking complete.
+#[test]
+fn two_fields_of_a_structure_may_not_share_an_identifier() {
+    let xml = r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/>
+        <Table id="T">
+          <Structure>
+            <Field id="ra" type="Float64"/>
+            <Field id="dec" type="Float64"/>
+            <Field id="ra" type="Float64"/>
+          </Structure>
+          <Row><Cell value="1"/><Cell value="2"/><Cell value="3"/></Row>
+        </Table></xisf>"#;
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let reader = xisf_core::Reader::from_bytes(bytes).expect("the header parses");
+    let element = reader
+        .header()
+        .root
+        .descendants()
+        .into_iter()
+        .find(|e| e.is("Table"))
+        .expect("the table element");
+
+    let err = xisf_core::table::Table::parse(element, reader.header())
+        .expect_err("a duplicate field identifier was accepted");
+    assert_eq!(err.kind(), xisf_core::ErrorKind::BadHeader);
+    assert!(err.message().contains("\"ra\""), "{}", err.message());
+}

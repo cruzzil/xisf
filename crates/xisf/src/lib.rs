@@ -525,10 +525,16 @@ impl<'a> PropertyRef<'a> {
         match self.property.kind.shape {
             Shape::Scalar | Shape::TimePoint => self.property.value.as_deref(),
             Shape::String => {
-                // A string is usually character data, but a long one may be
-                // held in a data block instead, in which case there is no
-                // text here to hand back.
-                self.property.value.as_deref().or(self.property.text.as_deref())
+                // Character data first, not the `value` attribute. "A Property
+                // element serializing a String property shall not have a value
+                // attribute, and must serialize the property value either
+                // directly in its character data contents, or as an XISF data
+                // block" -- so a `value` here is malformed, and preferring it
+                // let a crafted or careless file override the conforming
+                // contents. A long string lives in a data block instead, in
+                // which case there is no text to hand back and `bytes()` is
+                // the way to it.
+                self.property.text.as_deref().or(self.property.value.as_deref())
             }
             _ => None,
         }
