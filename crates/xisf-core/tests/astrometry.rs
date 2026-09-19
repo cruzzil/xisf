@@ -234,12 +234,18 @@ fn the_projection_vocabulary_is_complete_and_classified() {
 
 #[test]
 fn basis_functions_know_their_own_requirements() {
-    // "The polynomial part is required" for these two, and order >= 2.
+    // "The polynomial part is required" for these two, and neither takes a
+    // shape parameter. Their minimum orders differ: Table 17 gives m >= 2 for
+    // a thin plate spline and m >= 3 for VariableOrder, because "a kernel of
+    // this family with order 2 is a thin plate spline and shall use the
+    // ThinPlateSpline identifier" -- the two identifiers partition the family
+    // rather than overlapping.
     for f in [BasisFunction::ThinPlateSpline, BasisFunction::VariableOrder] {
         assert!(f.requires_polynomial(), "{}", f.name());
         assert!(!f.has_shape_parameter(), "{}", f.name());
-        assert_eq!(f.minimum_order(), 2, "{}", f.name());
     }
+    assert_eq!(BasisFunction::ThinPlateSpline.minimum_order(), 2);
+    assert_eq!(BasisFunction::VariableOrder.minimum_order(), 3);
     // These take a shape parameter and the polynomial part is optional.
     for f in [
         BasisFunction::Gaussian,
@@ -291,4 +297,186 @@ fn provenance_is_read_when_present() {
     assert_eq!(solution.provenance.creator_application.as_deref(), Some("SomeSolver 1.2"));
     assert_eq!(solution.provenance.creator_os.as_deref(), Some("Linux"));
     assert_eq!(solution.provenance.creator_module, None);
+}
+
+/// The whole pipeline, layer 1 only: image -> plane -> native -> celestial and
+/// back. A solution with nothing but the first layer is valid and complete, so
+/// this is the case every conforming decoder must get right.
+#[test]
+fn a_first_layer_solution_evaluates_and_round_trips() {
+    let (props, vecs) = layer_one();
+    let solution = read(&props, &vecs).expect("read").expect("a solution");
+
+    // The reference image point must land on the reference celestial point:
+    // that is what "the image coordinates that correspond to the origin of the
+    // projection plane" means, and the origin deprojects to the native pole.
+    let [ra, dec] = solution
+        .image_to_celestial(solution.projection.reference_image)
+        .expect("the reference point is always in domain");
+    assert!((ra - 10.684).abs() < 1e-9, "right ascension {ra}");
+    assert!((dec - 41.269).abs() < 1e-9, "declination {dec}");
+
+    // And every other pixel must survive the trip out and back, within the
+    // tolerance the specification sets: "two conforming implementations
+    // evaluating the same solution at the same point shall agree to within
+    // 10^-6 pixels in image coordinates, and no implementation should claim
+    // exactness beyond this tolerance". Asserting anything tighter would be
+    // claiming exactly that, and would turn a harmless change in summation
+    // order into a failure.
+    const TOLERANCE: f64 = 1e-6;
+    let mut worst = 0.0f64;
+    for &x in &[0.0, 3.5, 8.0, 12.25, 15.5] {
+        for &y in &[0.0, 4.0, 8.0, 11.75, 15.5] {
+            let celestial = solution.image_to_celestial([x, y]).expect("in domain");
+            let [x2, y2] = solution.celestial_to_image(celestial).expect("and back");
+            worst = worst.max((x - x2).abs()).max((y - y2).abs());
+            assert!(
+                (x - x2).abs() < TOLERANCE && (y - y2).abs() < TOLERANCE,
+                "({x}, {y}) came back as ({x2}, {y2})"
+            );
+        }
+    }
+    // Comfortably inside it rather than scraping past, which is what says the
+    // formulas are right and not merely within a generous bound.
+    assert!(worst < TOLERANCE / 10.0, "the worst round trip was {worst} pixels");
+}
+
+/// The plate scale the linear transformation declares must be the plate scale
+/// the evaluation produces. Half a degree per pixel in the test fixture means
+/// one pixel of separation is half a degree on the sky, near the reference
+/// point where the projection is locally flat.
+#[test]
+fn the_linear_transformation_sets_the_plate_scale() {
+    let (props, vecs) = layer_one();
+    let solution = read(&props, &vecs).expect("read").expect("a solution");
+    let reference = solution.projection.reference_image;
+
+    let [ra0, dec0] = solution.image_to_celestial(reference).expect("in domain");
+    let [_, dec1] =
+        solution.image_to_celestial([reference[0], reference[1] + 1.0]).expect("in domain");
+
+    // The fixture's matrix is 0.0005 degrees per pixel on the second axis.
+    let step = (dec1 - dec0).abs();
+    assert!((step - 0.0005).abs() < 1e-7, "one pixel moved {step} degrees in declination");
+    assert!(ra0 > 0.0);
+}
+
+/// Every projection must work end to end, not merely in isolation: the
+/// reference point is the one place the answer is known for all of them.
+#[test]
+fn every_projection_evaluates_at_the_reference_point() {
+    for name in [
+        "Gnomonic",
+        "Stereographic",
+        "ZenithalEqualArea",
+        "Orthographic",
+        "PlateCarree",
+        "Mercator",
+        "HammerAitoff",
+    ] {
+        let (mut props, vecs) = layer_one();
+        props[1] = ("ProjectionSystem", name);
+        let solution = read(&props, &vecs).expect("read").expect("a solution");
+
+        let [ra, dec] = solution
+            .image_to_celestial(solution.projection.reference_image)
+            .unwrap_or_else(|| panic!("{name}: the reference point was out of domain"));
+        assert!((ra - 10.684).abs() < 1e-8, "{name}: right ascension {ra}");
+        assert!((dec - 41.269).abs() < 1e-8, "{name}: declination {dec}");
+    }
+}
+
+/// A distortion model must actually reach the evaluation. A model whose
+/// structures load but stay empty would report a complete solution and quietly
+/// evaluate at second-layer accuracy, which is the kind of wrongness that
+/// never announces itself -- so this pins that the terms are loaded and that
+/// they move the answer.
+#[test]
+fn a_distortion_model_is_loaded_and_changes_the_result() {
+    let identity = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let (mut props, mut vecs) = layer_one();
+
+    for which in ["ImageToProjection", "ProjectionToImage"] {
+        props.push((
+            Box::leak(format!("DistortionModel:{which}:BasisFunction").into_boxed_str()),
+            "ThinPlateSpline",
+        ));
+        props.push((Box::leak(format!("DistortionModel:{which}:Order").into_boxed_str()), "2"));
+        props
+            .push((Box::leak(format!("DistortionModel:{which}:Terms").into_boxed_str()), "Global"));
+        // A Global term with no nodes and a first-degree polynomial: the
+        // residual is the constant 0.001 in u and 0.002 in v, which is small
+        // enough to be a plausible distortion and large enough to see.
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:X:Normalization")),
+            "F64Vector",
+            vec![0.0, 0.0, 1.0],
+        ));
+        vecs.push((leak(format!("DistortionModel:{which}:Global:X:Nodes")), "F64Matrix", vec![]));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:X:Coefficients")),
+            "F64Vector",
+            vec![0.001, 0.0, 0.0],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:Y:Coefficients")),
+            "F64Vector",
+            vec![0.002, 0.0, 0.0],
+        ));
+    }
+    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+
+    let solution = read(&props, &vecs).expect("read").expect("a solution");
+
+    let model = solution.distortion.as_ref().expect("the distortion model was dropped");
+    let global = model.image_to_projection.global.as_ref().expect("the Global term was not loaded");
+    assert!(global.x.nodes.is_empty(), "this fixture has no nodes");
+    assert_eq!(global.x.coefficients.len(), 3, "three polynomial coefficients");
+    assert_eq!(solution.availability, xisf_core::astrometry::Availability::Complete);
+
+    // The residual is constant, so it must appear as exactly that offset in
+    // the projection plane wherever it is evaluated.
+    let mut scratch = Vec::new();
+    let residual = model.image_to_projection.residual([5.0, 9.0], &mut scratch);
+    assert!((residual[0] - 0.001).abs() < 1e-12, "u residual {}", residual[0]);
+    assert!((residual[1] - 0.002).abs() < 1e-12, "v residual {}", residual[1]);
+}
+
+/// A coefficient vector that does not match the node count means the model
+/// would be evaluated with coefficients belonging to something else.
+#[test]
+fn a_mismatched_coefficient_count_costs_the_distortion_layer() {
+    let identity = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let (mut props, mut vecs) = layer_one();
+    for which in ["ImageToProjection", "ProjectionToImage"] {
+        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+        props.push((leak(format!("DistortionModel:{which}:BasisFunction")), "ThinPlateSpline"));
+        props.push((leak(format!("DistortionModel:{which}:Order")), "2"));
+        props.push((leak(format!("DistortionModel:{which}:Terms")), "Global"));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:X:Normalization")),
+            "F64Vector",
+            vec![0.0, 0.0, 1.0],
+        ));
+        vecs.push((leak(format!("DistortionModel:{which}:Global:X:Nodes")), "F64Matrix", vec![]));
+        // Order 2 with a polynomial part needs three coefficients; this has two.
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:X:Coefficients")),
+            "F64Vector",
+            vec![0.001, 0.0],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Global:Y:Coefficients")),
+            "F64Vector",
+            vec![0.002, 0.0],
+        ));
+    }
+    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+
+    let solution = read(&props, &vecs).expect("read").expect("a solution");
+    assert!(solution.distortion.is_none(), "a malformed model was kept");
+    assert_eq!(solution.usable_layer(), 2, "the layers below it should survive");
 }

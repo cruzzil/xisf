@@ -39,6 +39,14 @@ use alloc::collections::BTreeMap;
 use crate::err;
 use crate::error::Result;
 
+mod eval;
+mod load;
+mod projection;
+mod spline;
+
+pub use projection::{Rotation, celestial_to_native, deproject, native_to_celestial, project};
+pub use spline::{Spline, monomials, polynomial_terms, wendland};
+
 /// The prefix every property in this namespace carries.
 pub const NAMESPACE: &str = "AstrometricSolution";
 
@@ -269,12 +277,51 @@ impl BasisFunction {
         matches!(self, BasisFunction::ThinPlateSpline | BasisFunction::VariableOrder)
     }
 
-    /// The smallest legal order. `VariableOrder` "requires m >= 2"; a thin
-    /// plate spline of order 2 must use the `ThinPlateSpline` identifier.
+    /// The smallest legal order.
+    ///
+    /// Table 17 gives these separately, and they differ: a thin plate spline
+    /// is `m >= 2`, while `VariableOrder` is `m >= 3`, because "a kernel of
+    /// this family with order 2 is a thin plate spline and shall use the
+    /// ThinPlateSpline identifier". The two identifiers therefore partition
+    /// the same family rather than overlapping on order 2.
     pub fn minimum_order(self) -> i32 {
         match self {
-            BasisFunction::ThinPlateSpline | BasisFunction::VariableOrder => 2,
+            BasisFunction::ThinPlateSpline => 2,
+            BasisFunction::VariableOrder => 3,
             _ => 0,
+        }
+    }
+
+    /// The kernel itself: `phi(rho)`, with `rho` the distance in normalized
+    /// coordinates and `epsilon` the shape parameter where the kernel takes
+    /// one. Table 17.
+    ///
+    /// The logarithmic kernels are defined to be zero at the origin, which
+    /// they do not reach by limit alone -- `rho^2 ln rho` is an indeterminate
+    /// form there, and floating point gives `-inf * 0 = NaN` rather than 0.
+    pub fn eval(self, rho: f64, order: i32, epsilon: f64) -> f64 {
+        match self {
+            BasisFunction::ThinPlateSpline => {
+                if rho <= 0.0 {
+                    0.0
+                } else {
+                    rho * rho * rho.ln()
+                }
+            }
+            // (rho^2)^(m-1) ln(rho^2). Written on rho^2 as the table does,
+            // which also keeps it exact for even powers.
+            BasisFunction::VariableOrder => {
+                if rho <= 0.0 {
+                    0.0
+                } else {
+                    let r2 = rho * rho;
+                    r2.powi(order - 1) * r2.ln()
+                }
+            }
+            BasisFunction::Gaussian => (-(epsilon * rho).powi(2)).exp(),
+            BasisFunction::Multiquadric => (1.0 + (epsilon * rho).powi(2)).sqrt(),
+            BasisFunction::InverseMultiquadric => 1.0 / (1.0 + (epsilon * rho).powi(2)).sqrt(),
+            BasisFunction::InverseQuadratic => 1.0 / (1.0 + (epsilon * rho).powi(2)),
         }
     }
 }
@@ -441,11 +488,73 @@ pub struct ProjectiveTransformation {
     pub projection_to_image: [[f64; 3]; 3],
 }
 
-/// Layer 3, for one direction: everything but the bulk spline arrays.
+/// Which way round an image-plane step goes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Direction {
+    ImageToProjection,
+    ProjectionToImage,
+}
+
+impl Direction {
+    /// The token that appears in the property identifiers.
+    pub fn name(self) -> &'static str {
+        match self {
+            Direction::ImageToProjection => "ImageToProjection",
+            Direction::ProjectionToImage => "ProjectionToImage",
+        }
+    }
+}
+
+/// The two scalar splines of one term, one per output component.
 ///
-/// The nodes and coefficients can run to hundreds of thousands of doubles, so
-/// they are left in their data blocks and fetched on demand rather than
-/// materialized whenever a header is read.
+/// "The Y component of a term may share the nodes, the normalization and the
+/// shape parameter of the X component, in which case only its coefficients
+/// are stored." Sharing is resolved when the model is loaded, so both are
+/// complete splines here and evaluation need not know which case it was.
+#[derive(Clone, PartialEq, Debug)]
+pub struct SplinePair {
+    pub x: Spline,
+    pub y: Spline,
+}
+
+impl SplinePair {
+    /// Both components at a point, as a vector-valued spline `S_i(p)`.
+    pub fn eval(
+        &self,
+        point: [f64; 2],
+        direction: &DistortionDirection,
+        scratch: &mut Vec<f64>,
+    ) -> [f64; 2] {
+        let basis = direction.basis_function;
+        let order = direction.order;
+        let polynomial = direction.polynomial;
+        [
+            self.x.eval(point, basis, order, polynomial, scratch),
+            self.y.eval(point, basis, order, polynomial, scratch),
+        ]
+    }
+}
+
+/// A Local term: a spline on the disc with the given centre and radius.
+#[derive(Clone, PartialEq, Debug)]
+pub struct LocalTerm {
+    /// The centre of the support disc, in the direction's source coordinates.
+    pub center: [f64; 2],
+    /// The radius of the support disc, in source units.
+    pub radius: f64,
+    pub spline: SplinePair,
+}
+
+/// A Fallback term: a spline over the whole field, weighted by how badly the
+/// Local terms cover a point.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FallbackTerm {
+    /// The coverage threshold, in units of summed Local weight.
+    pub threshold: f64,
+    pub spline: SplinePair,
+}
+
+/// Layer 3, for one direction.
 #[derive(Clone, PartialEq, Debug)]
 pub struct DistortionDirection {
     pub basis_function: BasisFunction,
@@ -455,6 +564,12 @@ pub struct DistortionDirection {
     /// must be true for the kernels that require it.
     pub polynomial: bool,
     pub terms: Vec<TermKind>,
+    /// At most one Global term.
+    pub global: Option<SplinePair>,
+    /// The Local terms, in the order the packed properties store them.
+    pub local: Vec<LocalTerm>,
+    /// At most one Fallback term, and only alongside Local terms.
+    pub fallback: Option<FallbackTerm>,
 }
 
 impl DistortionDirection {
@@ -673,7 +788,16 @@ pub fn read(reader: &crate::Reader, image: &crate::header::Element) -> Result<Op
     let mut distortion = None;
     let has_distortion = scalars.keys().any(|k| k.starts_with("DistortionModel:"));
     if has_distortion {
-        match read_distortion(&scalars) {
+        let fetch = load::Blocks { reader, elements: blocks.clone(), scalars: &scalars };
+        match read_distortion(&scalars).and_then(|mut model| {
+            // The metadata parses from the header alone; the spline records
+            // live in data blocks. Both have to succeed for the layer to be
+            // usable, and both fail the same way -- by dropping this layer and
+            // leaving the ones below it -- so they are attempted together.
+            load::load(&mut model.image_to_projection, &fetch, "ImageToProjection")?;
+            load::load(&mut model.projection_to_image, &fetch, "ProjectionToImage")?;
+            Ok(model)
+        }) {
             Ok(model) => {
                 if projective.is_none() {
                     return Err(err!(
@@ -741,7 +865,17 @@ fn read_distortion(scalars: &BTreeMap<String, String>) -> Result<DistortionModel
             text("Terms").ok_or_else(|| err!(BadHeader, "a distortion model has no Terms"))?;
         let terms = TermKind::parse_list(terms_text)?;
 
-        let direction = DistortionDirection { basis_function, order, polynomial, terms };
+        let direction = DistortionDirection {
+            basis_function,
+            order,
+            polynomial,
+            terms,
+            // The spline arrays live in data blocks, which this function does
+            // not have a reader for; they are attached by `load_distortion`.
+            global: None,
+            local: Vec::new(),
+            fallback: None,
+        };
         direction.validate()?;
         Ok(direction)
     };
