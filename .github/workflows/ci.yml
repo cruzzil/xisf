@@ -200,6 +200,31 @@ jobs:
           name: fuzz-artifacts
           path: fuzz/artifacts/
 
+  # Validate headers against the authority's own XML Schema, which Revision 1
+  # publishes. The schema is fetched rather than vendored: it is
+  # all-rights-reserved with no redistribution grant, and this repository is
+  # MIT and publishes four crates. See scripts/fetch-xsd.sh.
+  #
+  # Both directions are checked. The corpus says we can read what PixInsight
+  # and libXISF write; the showcase file says what *we* write is valid, which
+  # is the direction a reader-only test never covers.
+  schema:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install xmllint
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libxml2-utils
+      - name: Fetch the schema
+        run: ./scripts/fetch-xsd.sh
+      - name: Write a header exercising the writer
+        run: cargo run --quiet --example write-showcase -p xisf-core -- showcase.xisf
+      - name: Validate
+        run: |
+          ./scripts/validate-headers.sh \
+            corpus/pixinsight/*.xisf corpus/generated/*.xisf showcase.xisf
+
   lint:
     runs-on: ubuntu-latest
     steps:

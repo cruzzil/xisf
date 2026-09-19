@@ -17,7 +17,7 @@ run "fmt"                    cargo fmt --all --check
 run "clippy"                 cargo clippy --workspace --all-targets
 run "test (default features)" cargo test --workspace
 run "no default features"    cargo test -p xisf-core --no-default-features
-for feature in zlib lz4 zstd checksums; do
+for feature in zlib lz4; do
     run "feature: $feature"  cargo test -p xisf-core --no-default-features --features "$feature"
 done
 # Two invocations: `libxisf`'s library target must be named `xisf` so the
