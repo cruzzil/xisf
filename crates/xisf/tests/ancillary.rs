@@ -161,3 +161,46 @@ fn shared_elements_reach_the_images_that_reference_them() {
     let thumbnail = image.thumbnail().expect("the referenced Thumbnail was dropped");
     assert_eq!(thumbnail.bytes().expect("thumbnail block").as_ref(), &[0, 1, 2, 3]);
 }
+
+/// An astrometric solution reaches the idiomatic API, and an image without one
+/// says so rather than erroring.
+#[test]
+fn astrometric_solutions_are_reachable_from_the_image() {
+    use xisf::astrometry::ProjectionSystem;
+
+    // A plain image carries no solution.
+    let plain = write_unit("");
+    let file = XisfFile::from_bytes(plain).expect("read");
+    assert!(file.images()[0].astrometric_solution().is_none());
+
+    // One that does is read, layer by layer.
+    let solved = write_unit(concat!(
+        r#"<Property id="AstrometricSolution:Version" type="String">1.0</Property>"#,
+        r#"<Property id="AstrometricSolution:ProjectionSystem" type="String">Gnomonic</Property>"#,
+        r#"<Property id="AstrometricSolution:ReferenceCelestialCoordinates" type="F64Vector" length="2" location="inline:base64">CtejcD0KJUCamZmZmSlEQA==</Property>"#,
+        r#"<Property id="AstrometricSolution:ReferenceImageCoordinates" type="F64Vector" length="2" location="inline:base64">AAAAAAAAIEAAAAAAAAAgQA==</Property>"#,
+        r#"<Property id="AstrometricSolution:LinearTransformationMatrix" type="F64Matrix" rows="2" columns="2" location="inline:base64">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=</Property>"#,
+    ));
+    let file = XisfFile::from_bytes(solved).expect("read");
+    let solution = file.images()[0]
+        .astrometric_solution()
+        .expect("a solution is present")
+        .expect("and readable");
+    assert_eq!(solution.projection.system, ProjectionSystem::Gnomonic);
+    assert_eq!(solution.usable_layer(), 4);
+}
+
+/// Build a monolithic unit whose single image carries `extra` child elements.
+fn write_unit(extra: &str) -> Vec<u8> {
+    let xml = format!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/><Image geometry="2:2:1" sampleFormat="UInt8" location="attachment:4096:4">{extra}</Image></xisf>"#
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    // The block must start past the header, which these properties make long.
+    bytes.resize(4096, 0);
+    bytes.extend_from_slice(&[1u8, 2, 3, 4]);
+    bytes
+}

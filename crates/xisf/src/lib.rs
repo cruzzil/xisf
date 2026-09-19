@@ -40,6 +40,8 @@ use std::path::Path;
 // that, because `verify()` returns a `ChecksumStatus` that was not re-exported
 // and so could not be matched on.
 pub use xisf_core::Reader;
+/// The `AstrometricSolution` property namespace: where an image is on the sky.
+pub use xisf_core::astrometry;
 pub use xisf_core::block::{ByteOrder, ChecksumAlgorithm, Codec, Compression, Location};
 pub use xisf_core::error::{Error, ErrorKind, Result};
 pub use xisf_core::header::DataRef;
@@ -339,6 +341,28 @@ impl<'a> ImageRef<'a> {
     pub fn icc_profile(&self) -> Option<Result<Cow<'a, [u8]>>> {
         let element = *self.associated("ICCProfile").first()?;
         Some(self.file.reader.block(&element.data))
+    }
+
+    /// The image's astrometric solution: where it is on the sky.
+    ///
+    /// `None` means the image carries no solution, which is the ordinary
+    /// case. An `Err` means it carries one this decoder must not interpret --
+    /// an unrecognized projection system, or a major revision it does not
+    /// implement, both of which the specification says make the whole
+    /// solution unavailable rather than partly usable.
+    ///
+    /// A solution that is readable but only partly usable comes back as
+    /// `Ok`, with [`Solution::availability`] saying which layers were dropped
+    /// and why: an unrecognized basis function costs the distortion model and
+    /// leaves the projection and the projective transformation usable.
+    ///
+    /// [`Solution::availability`]: xisf_core::astrometry::Solution::availability
+    pub fn astrometric_solution(&self) -> Option<Result<astrometry::Solution>> {
+        match astrometry::read(&self.file.reader, self.element) {
+            Ok(None) => None,
+            Ok(Some(solution)) => Some(Ok(solution)),
+            Err(e) => Some(Err(e)),
+        }
     }
 
     /// The image's RGB working space.
