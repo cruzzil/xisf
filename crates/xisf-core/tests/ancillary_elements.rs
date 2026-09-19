@@ -368,3 +368,110 @@ fn two_fields_of_a_structure_may_not_share_an_identifier() {
     assert_eq!(err.kind(), xisf_core::ErrorKind::BadHeader);
     assert!(err.message().contains("\"ra\""), "{}", err.message());
 }
+
+/// "the byte shuffling transform shall be applied to the entire data block
+/// before its division into subblocks, and the reverse transform after all
+/// subblocks have been decompressed and concatenated."
+///
+/// This is the clause an implementation written against the original text is
+/// most likely to get wrong, because unshuffling each subblock as it is
+/// decoded is the natural way to write the loop and is indistinguishable from
+/// the correct version whenever the split happens to fall on an item boundary.
+/// The subblock lengths below are deliberately *not* multiples of the item
+/// size, so the two orderings disagree.
+///
+/// Nothing else in the suite covers both at once: the subblock test uses no
+/// shuffling, and the shuffling tests use no subblocks.
+#[cfg(feature = "zlib")]
+#[test]
+fn shuffling_spans_the_whole_block_rather_than_each_subblock() {
+    use std::io::Write;
+    use xisf_core::block::{Codec, Compression};
+
+    // Distinguishable four-byte items, so a byte landing in the wrong place is
+    // visible rather than merely different.
+    const ITEM: usize = 4;
+    let plain: Vec<u8> = (0..250u32).flat_map(|i| (i * 0x0103_0107).to_le_bytes()).collect();
+    assert_eq!(plain.len() % ITEM, 0);
+
+    // Shuffle the whole block first, as an encoder must.
+    let shuffled = xisf_core::codec::shuffle(&plain, ITEM);
+
+    // Then cut it at offsets that are not item boundaries.
+    let cuts = [301usize, 499];
+    assert!(cuts.iter().all(|c| c % ITEM != 0), "the cuts must straddle items");
+    let pieces = [&shuffled[..cuts[0]], &shuffled[cuts[0]..cuts[1]], &shuffled[cuts[1]..]];
+
+    let mut stored = Vec::new();
+    let mut subblocks = Vec::new();
+    for piece in pieces {
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(piece).unwrap();
+        let compressed = encoder.finish().unwrap();
+        subblocks.push((compressed.len() as u64, piece.len() as u64));
+        stored.extend_from_slice(&compressed);
+    }
+
+    let compression = Compression {
+        codec: Codec::Zlib,
+        uncompressed_size: plain.len() as u64,
+        shuffle_item_size: Some(ITEM as u64),
+        subblocks,
+    };
+    assert_eq!(
+        xisf_core::codec::decode(&stored, &compression).expect("decode"),
+        plain,
+        "the block did not survive shuffling across a subblock split"
+    );
+
+    // And the distinction is real: unshuffling each piece separately gives
+    // something else, so the test above is not passing by coincidence.
+    let per_piece: Vec<u8> =
+        pieces.iter().flat_map(|p| xisf_core::codec::unshuffle(p, ITEM)).collect();
+    assert_ne!(per_piece, plain, "per-subblock unshuffling happened to agree");
+}
+
+/// "For compressed data blocks, the byteOrder attribute applies to the
+/// uncompressed data."
+///
+/// Three stages have to happen in one order -- decompress, unshuffle, then
+/// swap -- and no test exercised them as a chain: the two big-endian tests use
+/// uncompressed inline blocks, and no corpus file is big-endian. Swapping the
+/// compressed bytes instead would return every sample byte-reversed, which for
+/// a Float32 turns 1.0 into 4.6e-41.
+#[cfg(feature = "zlib")]
+#[test]
+fn a_big_endian_block_is_swapped_after_it_is_decompressed_and_unshuffled() {
+    use std::io::Write;
+    use xisf_core::block::{ByteOrder, Codec, Compression};
+
+    let values: Vec<u32> = (0..64u32).map(|i| i.wrapping_mul(0x0100_0193) | 1).collect();
+    let big_endian: Vec<u8> = values.iter().flat_map(|v| v.to_be_bytes()).collect();
+
+    let shuffled = xisf_core::codec::shuffle(&big_endian, 4);
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&shuffled).unwrap();
+    let stored = encoder.finish().unwrap();
+
+    let plain = xisf_core::codec::decode(
+        &stored,
+        &Compression {
+            codec: Codec::Zlib,
+            uncompressed_size: big_endian.len() as u64,
+            shuffle_item_size: Some(4),
+            subblocks: Vec::new(),
+        },
+    )
+    .expect("decode");
+
+    // What comes out of the codec is the stored byte order, untouched.
+    assert_eq!(plain, big_endian, "decoding must not reorder bytes");
+
+    // The swap is the caller's step, and it applies to these bytes -- the
+    // uncompressed ones -- not to the compressed stream.
+    assert_eq!(ByteOrder::Big.is_native(), cfg!(target_endian = "big"));
+    let decoded: Vec<u32> =
+        plain.chunks_exact(4).map(|c| u32::from_be_bytes(c.try_into().unwrap())).collect();
+    assert_eq!(decoded, values, "the samples did not survive the three stages");
+}

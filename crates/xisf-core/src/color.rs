@@ -277,6 +277,69 @@ mod tests {
         assert!(worst < 1e-4, "the matrix differs from the published one by {worst}");
     }
 
+    /// Chromatic colours, against an independent implementation.
+    ///
+    /// Every other L*a*b* test here is invariant under swapping `a` and `b`,
+    /// or under flipping the sign of the 29/50 term, so long as the forward
+    /// and inverse transforms are changed together -- round trips, inverses
+    /// and the achromatic white and black points all survive it untouched.
+    /// A swap would make every CIE L*a*b* image this library writes green
+    /// where it should be red, and reading it back through the same code
+    /// would look perfect.
+    ///
+    /// These values come from `colour-science` 0.4.7, computed with the
+    /// specification's own D50 white point and sRGB primaries and converted
+    /// into XISF's normalized form. They agree with this implementation to
+    /// 5e-10.
+    ///
+    /// ```text
+    /// pip install colour-science
+    /// python - <<'PY'
+    /// import numpy as np, colour
+    /// from colour.models import eotf_sRGB
+    /// D50 = np.array([0.96422, 1.0, 0.82521])
+    /// xy = np.array([[0.648431, 0.330856], [0.321152, 0.597871], [0.155886, 0.066044]])
+    /// wp = colour.XYZ_to_xy(D50)
+    /// M = colour.normalised_primary_matrix(xy, wp)
+    /// for rgb in [(1,0,0), (0,1,0), (0,0,1), (0.2,0.6,0.35), (1,1,0)]:
+    ///     L, a, b = colour.XYZ_to_Lab(M @ eotf_sRGB(np.array(rgb, float)), wp)
+    ///     print(L/100, 0.5 + a*116/100000, 0.5 + b*116/40000)
+    /// PY
+    /// ```
+    #[test]
+    fn chromatic_colours_agree_with_an_independent_implementation() {
+        let transform = ColorTransform::srgb();
+        let reference = [
+            ("red", [1.0, 0.0, 0.0], [0.542_902_841, 0.593_741_425, 0.702_671_220]),
+            ("green", [0.0, 1.0, 0.0], [0.878_185_825, 0.408_031_212, 0.734_881_397]),
+            ("blue", [0.0, 0.0, 1.0], [0.295_686_645, 0.579_225_348, 0.175_117_300]),
+            ("mid", [0.2, 0.6, 0.35], [0.562_694_762, 0.451_611_727, 0.571_345_428]),
+            ("yellow", [1.0, 1.0, 0.0], [0.976_069_495, 0.481_726_180, 0.770_835_430]),
+        ];
+        for (name, rgb, want) in reference {
+            let got = transform.rgb_to_lab(rgb);
+            for i in 0..3 {
+                assert!(
+                    (got[i] - want[i]).abs() < 1e-8,
+                    "{name}: got {got:?}, an independent implementation gives {want:?}"
+                );
+            }
+        }
+    }
+
+    /// The sign structure, stated on its own so that the intent survives a
+    /// refactor even if the reference table above is ever regenerated: `a` is
+    /// the red-green axis and `b` the blue-yellow one, with the achromatic
+    /// axis at one half.
+    #[test]
+    fn the_chromatic_axes_point_the_way_they_should() {
+        let t = ColorTransform::srgb();
+        assert!(t.rgb_to_lab([1.0, 0.0, 0.0])[1] > 0.5, "red must be on the +a side");
+        assert!(t.rgb_to_lab([0.0, 1.0, 0.0])[1] < 0.5, "green must be on the -a side");
+        assert!(t.rgb_to_lab([0.0, 0.0, 1.0])[2] < 0.5, "blue must be on the -b side");
+        assert!(t.rgb_to_lab([1.0, 1.0, 0.0])[2] > 0.5, "yellow must be on the +b side");
+    }
+
     #[test]
     fn the_matrix_inverse_is_an_inverse() {
         let transform = ColorTransform::srgb();

@@ -98,6 +98,68 @@ fn read(
     astrometry::read(&reader, image)
 }
 
+/// As [`read`], plus the `Local:*:NodeOffsets` property, which is an
+/// `I32Vector` and so cannot go through the `f64` array helper.
+fn read_with_offsets(
+    properties: &[(&str, &str)],
+    vectors: &[(&str, &str, Vec<f64>)],
+    offsets: &[i32],
+) -> Option<astrometry::Solution> {
+    let mut body = String::new();
+    for (id, value) in properties {
+        body.push_str(&format!(
+            r#"<Property id="AstrometricSolution:{id}" type="String">{value}</Property>"#
+        ));
+    }
+    for (id, kind, values) in vectors {
+        let mut raw = Vec::new();
+        for v in values {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        let shape = if *kind == "F64Matrix" {
+            // The fixtures use only 2- and 3-column matrices, and the two are
+            // told apart by whether the count divides by three without also
+            // dividing by two -- enough for these shapes, and not a general
+            // rule.
+            let columns = if values.len() == 9 || (values.len() % 3 == 0 && values.len() % 2 != 0) {
+                3
+            } else {
+                2
+            };
+            format!(r#"rows="{}" columns="{columns}""#, values.len() / columns)
+        } else {
+            format!(r#"length="{}""#, values.len())
+        };
+        body.push_str(&format!(
+            r#"<Property id="AstrometricSolution:{id}" type="{kind}" {shape} location="inline:base64">{}</Property>"#,
+            base64(&raw)
+        ));
+    }
+    for which in ["ImageToProjection", "ProjectionToImage"] {
+        let mut raw = Vec::new();
+        for v in offsets {
+            raw.extend_from_slice(&v.to_le_bytes());
+        }
+        body.push_str(&format!(
+            r#"<Property id="AstrometricSolution:DistortionModel:{which}:Local:X:NodeOffsets" type="I32Vector" length="{}" location="inline:base64">{}</Property>"#,
+            offsets.len(),
+            base64(&raw)
+        ));
+    }
+
+    let xml = format!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/><Image geometry="16:16:1" sampleFormat="UInt8" location="attachment:8192:256">{body}</Image></xisf>"#
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let reader = Reader::from_bytes(bytes).expect("header");
+    let image = reader.header().images()[0];
+    astrometry::read(&reader, image).expect("read")
+}
+
 #[test]
 fn an_image_without_a_solution_has_none() {
     let solution = read(&[], &[]).expect("read");
@@ -479,4 +541,194 @@ fn a_mismatched_coefficient_count_costs_the_distortion_layer() {
     let solution = read(&props, &vecs).expect("read").expect("a solution");
     assert!(solution.distortion.is_none(), "a malformed model was kept");
     assert_eq!(solution.usable_layer(), 2, "the layers below it should survive");
+}
+
+/// Local terms are packed: all of a direction's terms share one node array,
+/// one coefficient array and one array of normalizations, divided by a vector
+/// of node offsets. Nothing exercised that unpacking -- the only distortion
+/// test uses a single Global term with no nodes at all.
+///
+/// An off-by-one in the coefficient slice (forgetting that each term also
+/// carries its own polynomial coefficients, so the stride is `i * Q`) hands
+/// every term its neighbour's coefficients. The solution still evaluates and
+/// still round-trips; it is simply wrong by whatever the local distortion is.
+#[test]
+fn local_terms_are_unpacked_by_their_node_offsets() {
+    let identity = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    let (mut props, mut vecs) = layer_one();
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+
+    // Three Local terms with different node counts -- 2, 0 and 1 -- so a
+    // uniform stride cannot pass. Order 2 means Q = 3 polynomial coefficients
+    // each; all radial coefficients are zero and the polynomial constant of
+    // term i is i + 1, so each term's residual is a number that names it.
+    let offsets: Vec<f64> = vec![0.0, 2.0, 2.0]; // written as I32Vector below
+    let nodes: Vec<f64> = vec![0.1, 0.1, 0.2, 0.2, 0.3, 0.3]; // 3 nodes total
+    let _ = &offsets;
+
+    for which in ["ImageToProjection", "ProjectionToImage"] {
+        props.push((leak(format!("DistortionModel:{which}:BasisFunction")), "ThinPlateSpline"));
+        props.push((leak(format!("DistortionModel:{which}:Order")), "2"));
+        props.push((leak(format!("DistortionModel:{which}:Terms")), "Local"));
+
+        // Far apart, with small radii, so exactly one term covers each centre.
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:Center")),
+            "F64Matrix",
+            vec![0.0, 0.0, 1000.0, 0.0, 0.0, 1000.0],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:Radius")),
+            "F64Vector",
+            vec![10.0, 10.0, 10.0],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:X:Normalization")),
+            "F64Matrix",
+            vec![0.0, 0.0, 1.0, 1000.0, 0.0, 1.0, 0.0, 1000.0, 1.0],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:X:Nodes")),
+            "F64Matrix",
+            nodes.clone(),
+        ));
+        // Coefficients: per term, (radial for its nodes) then (1, 0, 0) scaled
+        // so the constant is the term number.
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:X:Coefficients")),
+            "F64Vector",
+            vec![
+                0.0, 0.0, 1.0, 0.0, 0.0, // term 0: 2 nodes + constant 1
+                2.0, 0.0, 0.0, // term 1: 0 nodes + constant 2
+                0.0, 3.0, 0.0, 0.0, // term 2: 1 node + constant 3
+            ],
+        ));
+        vecs.push((
+            leak(format!("DistortionModel:{which}:Local:Y:Coefficients")),
+            "F64Vector",
+            vec![
+                0.0, 0.0, 10.0, 0.0, 0.0, //
+                20.0, 0.0, 0.0, //
+                0.0, 30.0, 0.0, 0.0,
+            ],
+        ));
+    }
+    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+
+    // The node offsets are an I32Vector, which the array helper cannot build,
+    // so this fixture is assembled by hand below.
+    let solution = read_with_offsets(&props, &vecs, &[0i32, 2, 2]).expect("a solution");
+    let model = solution.distortion.as_ref().expect("the distortion model was dropped");
+    let direction = &model.image_to_projection;
+    assert_eq!(direction.local.len(), 3, "three Local terms");
+
+    // Each term owns its own node slice...
+    assert_eq!(direction.local[0].spline.x.nodes.len(), 2);
+    assert_eq!(direction.local[1].spline.x.nodes.len(), 0);
+    assert_eq!(direction.local[2].spline.x.nodes.len(), 1);
+
+    // ...and its own coefficients, which the residual at each centre names.
+    let mut scratch = Vec::new();
+    for (i, expected) in [(0usize, 1.0), (1, 2.0), (2, 3.0)] {
+        let centre = direction.local[i].center;
+        let residual = direction.residual(centre, &mut scratch);
+        assert!(
+            (residual[0] - expected).abs() < 1e-9,
+            "term {i} at {centre:?} gave {residual:?}, wanted x = {expected}"
+        );
+        assert!((residual[1] - expected * 10.0).abs() < 1e-9, "term {i} Y component: {residual:?}");
+    }
+}
+
+/// The Fallback term's weight is `W(s/t0)`, with `s` the summed Local coverage
+/// and `t0` the threshold -- so it "contributes nothing" where coverage is
+/// good and "takes over where the coverage of the Local terms fails".
+///
+/// Nothing tested the composition. If the weight is mis-normalized, every
+/// point in the well-covered interior gets a blend of the local fit and the
+/// coarse global one: a smooth, plausible, systematically biased solution
+/// across the whole frame.
+#[test]
+fn a_fallback_term_contributes_nothing_where_coverage_is_good() {
+    use xisf_core::astrometry::{
+        BasisFunction, DistortionDirection, FallbackTerm, LocalTerm, Spline, SplinePair, TermKind,
+    };
+
+    // A constant residual per term, so the blend is readable directly.
+    let constant = |value: f64| Spline {
+        normalization: [0.0, 0.0, 1.0],
+        nodes: Vec::new(),
+        coefficients: vec![value, 0.0, 0.0],
+        shape_parameter: None,
+    };
+    let pair = |x: f64| SplinePair { x: constant(x), y: constant(x) };
+
+    let direction = DistortionDirection {
+        basis_function: BasisFunction::ThinPlateSpline,
+        order: 2,
+        polynomial: true,
+        terms: vec![TermKind::Local, TermKind::Fallback],
+        global: None,
+        local: vec![LocalTerm { center: [0.0, 0.0], radius: 10.0, spline: pair(1.0) }],
+        fallback: Some(FallbackTerm { threshold: 0.5, spline: pair(9.0) }),
+    };
+
+    let mut scratch = Vec::new();
+    // At the centre the Local weight is 1, which is >= the threshold, so the
+    // Fallback weight is W(2) = 0 and the Local term answers alone.
+    let inside = direction.residual([0.0, 0.0], &mut scratch);
+    assert!((inside[0] - 1.0).abs() < 1e-12, "the Fallback biased a covered point: {inside:?}");
+
+    // Far outside every disc the Local coverage is zero, so the Fallback
+    // spline is the whole residual field.
+    let outside = direction.residual([1000.0, 1000.0], &mut scratch);
+    assert!((outside[0] - 9.0).abs() < 1e-12, "the Fallback did not take over: {outside:?}");
+
+    // And in between it is a genuine blend, not a step.
+    let between = direction.residual([9.5, 0.0], &mut scratch);
+    assert!(between[0] > 1.0 && between[0] < 9.0, "the transition was not continuous: {between:?}");
+}
+
+/// "If the sum of weights is zero at a point, which can only happen in a
+/// direction without a Fallback term, R_D(p) shall be the value of the Local
+/// term with the smallest t, or zero if there are no terms."
+#[test]
+fn without_a_fallback_the_nearest_local_term_answers_beyond_the_coverage() {
+    use xisf_core::astrometry::{
+        BasisFunction, DistortionDirection, LocalTerm, Spline, SplinePair, TermKind,
+    };
+
+    let constant = |value: f64| Spline {
+        normalization: [0.0, 0.0, 1.0],
+        nodes: Vec::new(),
+        coefficients: vec![value, 0.0, 0.0],
+        shape_parameter: None,
+    };
+    let pair = |x: f64| SplinePair { x: constant(x), y: constant(x) };
+
+    let mut direction = DistortionDirection {
+        basis_function: BasisFunction::ThinPlateSpline,
+        order: 2,
+        polynomial: true,
+        terms: vec![TermKind::Local],
+        global: None,
+        local: vec![
+            LocalTerm { center: [0.0, 0.0], radius: 1.0, spline: pair(1.0) },
+            LocalTerm { center: [500.0, 0.0], radius: 1.0, spline: pair(2.0) },
+        ],
+        fallback: None,
+    };
+
+    let mut scratch = Vec::new();
+    // Beyond every disc: the nearest term by t, which is the first one.
+    let far = direction.residual([10.0, 0.0], &mut scratch);
+    assert!((far[0] - 1.0).abs() < 1e-12, "the nearest term did not answer: {far:?}");
+    // Nearer the second one, it should answer instead.
+    let other = direction.residual([490.0, 0.0], &mut scratch);
+    assert!((other[0] - 2.0).abs() < 1e-12, "the wrong term answered: {other:?}");
+
+    // "or zero if there are no terms"
+    direction.local.clear();
+    assert_eq!(direction.residual([0.0, 0.0], &mut scratch), [0.0, 0.0]);
 }
