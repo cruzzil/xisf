@@ -120,7 +120,14 @@ pub struct Header {
 impl Header {
     /// Every `<Image>` in the header, in document order.
     pub fn images(&self) -> Vec<&Element> {
-        self.root.descendants().into_iter().filter(|e| e.is("Image")).collect()
+        // Children of the root, not descendants. "Image elements shall be
+        // child elements of the unique XISF root element of the XISF unit",
+        // and an extension element -- which Revision 1 requires to be a child
+        // of the root, in its own namespace, and which decoders must ignore --
+        // could otherwise carry an `<Image>` that this reported as real. A
+        // decoder is supposed to ignore content it does not recognise, not
+        // mine it for core elements.
+        self.root.children.iter().filter(|e| e.is("Image")).collect()
     }
 }
 

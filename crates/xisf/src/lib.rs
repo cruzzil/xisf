@@ -102,7 +102,7 @@ impl XisfFile {
             .root
             .descendants()
             .into_iter()
-            .filter(|e| e.name == "Property")
+            .filter(|e| e.is("Property"))
             .filter_map(|element| {
                 Property::parse(element).ok().map(|property| PropertyRef {
                     file: self,
@@ -124,7 +124,7 @@ impl XisfFile {
             .root
             .descendants()
             .into_iter()
-            .filter(|e| e.name == "Table")
+            .filter(|e| e.is("Table"))
             .filter_map(|element| Table::parse(element, header).ok())
             .collect()
     }
@@ -147,7 +147,7 @@ impl XisfFile {
             .root
             .descendants()
             .into_iter()
-            .filter(|e| e.name == "Property")
+            .filter(|e| e.is("Property"))
             .filter_map(|e| {
                 let id = e.attr("id")?.to_string();
                 let value = e.attr("value").map(str::to_owned).or_else(|| e.data.text.clone())?;

@@ -65,18 +65,16 @@ fn write_unit(scratch: &Scratch, blocks: &[(u64, Vec<u8>)], locator: &str) -> Pa
     header
 }
 
-/// A monolithic wrapper whose only job is to carry the same `location`, so the
-/// existing `Reader` can be pointed at it. A `.xish` has no signature, so it
-/// is not something `Reader::open` accepts.
-fn monolithic_naming(scratch: &Scratch, locator: &str) -> PathBuf {
-    let xml = header_naming(locator);
-    let mut bytes = Vec::from(*b"XISF0100");
-    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&[0u8; 4]);
-    bytes.extend_from_slice(xml.as_bytes());
-
-    let path = scratch.join("unit.xisf");
-    std::fs::write(&path, bytes).expect("write");
+/// A header file carrying the given `location`.
+///
+/// It must be a header file rather than a monolithic wrapper: "External XISF
+/// data blocks shall not occur in a monolithic XISF file", so a `.xisf`
+/// naming a `path(...)` or `url(...)` block is refused. `Reader::open` takes
+/// either form -- it decides by looking at the bytes rather than at the
+/// suffix -- so a bare XML document is all this needs to be.
+fn header_file_naming(scratch: &Scratch, locator: &str) -> PathBuf {
+    let path = scratch.join("unit.xish");
+    std::fs::write(&path, header_naming(locator)).expect("write");
     path
 }
 
@@ -91,7 +89,7 @@ fn a_block_is_read_out_of_a_data_blocks_file_by_identifier() {
     std::fs::write(scratch.join("data.xisb"), write_blocks_file(&plain_blocks(&blocks)).unwrap())
         .unwrap();
 
-    let path = monolithic_naming(&scratch, "path(data.xisb):7");
+    let path = header_file_naming(&scratch, "path(data.xisb):7");
     let reader = Reader::open(&path).expect("open");
     let image = reader.header().images()[0];
 
@@ -110,7 +108,7 @@ fn a_blocks_file_must_be_addressed_by_identifier() {
     )
     .unwrap();
 
-    let path = monolithic_naming(&scratch, "path(data.xisb)");
+    let path = header_file_naming(&scratch, "path(data.xisb)");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BadAttribute);
@@ -124,7 +122,7 @@ fn a_plain_external_file_is_the_whole_block() {
     let data = pixels();
     std::fs::write(scratch.join("raw.dat"), &data).unwrap();
 
-    let path = monolithic_naming(&scratch, "path(raw.dat)");
+    let path = header_file_naming(&scratch, "path(raw.dat)");
     let reader = Reader::open(&path).expect("open");
     let read = reader.block(&reader.header().images()[0].data).expect("block");
     assert_eq!(&*read, &data[..]);
@@ -136,7 +134,7 @@ fn a_plain_file_may_not_be_addressed_by_identifier() {
     let scratch = Scratch::new("plain-id");
     std::fs::write(scratch.join("raw.dat"), pixels()).unwrap();
 
-    let path = monolithic_naming(&scratch, "path(raw.dat):3");
+    let path = header_file_naming(&scratch, "path(raw.dat):3");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::BadAttribute);
@@ -151,7 +149,7 @@ fn an_unknown_identifier_is_reported() {
     )
     .unwrap();
 
-    let path = monolithic_naming(&scratch, "path(data.xisb):42");
+    let path = header_file_naming(&scratch, "path(data.xisb):42");
     let reader = Reader::open(&path).expect("open");
     let err = reader.block(&reader.header().images()[0].data).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
@@ -307,15 +305,12 @@ fn the_reader_resolves_a_written_distributed_unit() {
     let unit = writer.to_distributed("blocks.xisb").expect("to_distributed");
     std::fs::write(scratch.join(&unit.blocks_file_name), &unit.blocks).unwrap();
 
-    // A monolithic file carrying the distributed header's body, so `Reader`
-    // has a path to resolve `path(blocks.xisb)` against.
-    let xml = String::from_utf8(unit.header.clone()).unwrap();
-    let mut monolithic = Vec::from(*b"XISF0100");
-    monolithic.extend_from_slice(&(xml.len() as u32).to_le_bytes());
-    monolithic.extend_from_slice(&[0u8; 4]);
-    monolithic.extend_from_slice(xml.as_bytes());
-    let path = scratch.join("unit.xisf");
-    std::fs::write(&path, monolithic).unwrap();
+    // The header file as the writer produced it. Wrapping it in a monolithic
+    // container would be the wrong shape as well as the wrong test: external
+    // blocks may not occur in a monolithic file, and `Reader::open` takes a
+    // header file directly.
+    let path = scratch.join("unit.xish");
+    std::fs::write(&path, &unit.header).unwrap();
 
     let reader = Reader::open(&path).expect("open");
     let read = reader.block(&reader.header().images()[0].data).expect("block");
@@ -398,7 +393,7 @@ fn the_header_dir_token_resolves_beside_the_header() {
         "path(@header_dir/astrometry/solution.dat)",
         "path(plain.bin)",
     ] {
-        let path = monolithic_naming(&scratch, locator);
+        let path = header_file_naming(&scratch, locator);
         let reader = Reader::open(&path).unwrap_or_else(|e| panic!("{locator}: {e}"));
         let image = reader.header().images()[0];
         assert_eq!(

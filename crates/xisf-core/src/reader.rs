@@ -275,6 +275,25 @@ impl Reader {
                 Ok(Cow::Owned(decode_text(text, *encoding)?))
             }
 
+            // "External XISF data blocks shall not occur in a monolithic XISF
+            // file." The mirror rule -- no attached blocks in a distributed
+            // unit -- is enforced by the bounds check above, since a header
+            // file has no bytes after its header for one to live in.
+            //
+            // This is a substitution channel as much as a conformance rule: a
+            // monolithic file that quietly draws its pixels from a sibling on
+            // disk cannot be detected by its own checksum, which covers the
+            // substituted bytes.
+            Location::Path { .. } | Location::Url { .. }
+                if self.layout.form == crate::layout::Form::Monolithic =>
+            {
+                Err(err!(
+                    BadAttribute,
+                    "a monolithic XISF file may not reference an external data block; \
+                     external blocks belong to a distributed unit"
+                ))
+            }
+
             Location::Path { path, index } => {
                 Ok(Cow::Owned(read_external_block(&self.resolve_relative(path)?, path, *index)?))
             }
@@ -647,6 +666,13 @@ mod tests {
     use super::*;
     use crate::ErrorKind;
 
+    /// A distributed unit's header file: the XML alone, no signature and no
+    /// preamble. This is the form external data blocks belong to -- a
+    /// monolithic file may not reference one.
+    fn header_file(header: &str) -> Vec<u8> {
+        header.as_bytes().to_vec()
+    }
+
     fn build(header: &str, trailing: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(crate::layout::SIGNATURE);
@@ -736,7 +762,7 @@ mod tests {
             r#"<xisf version="1.0"><Image location="path({})"/></xisf>"#,
             target.display().to_string().replace('\\', "/")
         );
-        let mut reader = Reader::from_bytes(build(&xml, &[])).unwrap();
+        let mut reader = Reader::from_bytes(header_file(&xml)).unwrap();
 
         let data = reader.header().images()[0].data.clone();
         assert_eq!(
@@ -760,7 +786,7 @@ mod tests {
     fn url_blocks_need_a_resolver_the_caller_installs() {
         let xml =
             r#"<xisf version="1.0"><Image location="url(https://example.com/b.dat)"/></xisf>"#;
-        let mut reader = Reader::from_bytes(build(xml, &[])).unwrap();
+        let mut reader = Reader::from_bytes(header_file(xml)).unwrap();
         let data = reader.header().images()[0].data.clone();
 
         let err = reader.stored_block(&data).unwrap_err();
@@ -796,7 +822,7 @@ mod tests {
         .unwrap();
 
         let xml = r#"<xisf version="1.0"><Image location="url(https://h/b.xisb):0x2a"/></xisf>"#;
-        let mut reader = Reader::from_bytes(build(xml, &[])).unwrap();
+        let mut reader = Reader::from_bytes(header_file(xml)).unwrap();
         reader.set_url_resolver(move |_| Ok(blocks.clone()));
 
         let data = reader.header().images()[0].data.clone();

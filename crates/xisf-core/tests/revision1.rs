@@ -316,3 +316,36 @@ fn every_whole_name_type_alias_is_understood() {
         assert_eq!(parsed.name(), canonical, "{alias}");
     }
 }
+
+/// "Image elements shall be child elements of the unique XISF root element",
+/// and an extension element -- which must be in another namespace, and which
+/// decoders are required to ignore -- may not contain core elements. Mining
+/// one for an `<Image>` invents an image the unit does not contain.
+#[test]
+fn an_image_buried_in_an_extension_element_is_not_an_image() {
+    let reader = Reader::from_bytes(unit(
+        r#"<ext:Wrapper xmlns:ext="http://example.com/notxisf"><Image geometry="9999:9999:3" sampleFormat="UInt8" location="attachment:200:1"/></ext:Wrapper>"#,
+    ))
+    .expect("header");
+    assert_eq!(reader.header().images().len(), 0, "a buried Image was reported as real");
+}
+
+/// "External XISF data blocks shall not occur in a monolithic XISF file."
+///
+/// Beyond conformance this is a substitution channel: a monolithic file that
+/// quietly draws its pixels from a sibling on disk cannot be detected by its
+/// own checksum, which covers whatever the sibling held.
+#[test]
+fn a_monolithic_file_may_not_reference_an_external_block() {
+    for locator in ["path(@header_dir/blocks.xisb):0x1", "url(https://example.com/b.xisb)"] {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Image id="I" geometry="2:2:1" sampleFormat="UInt8" location="{locator}"/>"#
+        )))
+        .expect("the header still parses");
+
+        let image = reader.header().images()[0];
+        let err = reader.stored_block(&image.data).expect_err("{locator} was followed");
+        assert_eq!(err.kind(), ErrorKind::BadAttribute);
+        assert!(err.message().contains("monolithic"), "{}", err.message());
+    }
+}

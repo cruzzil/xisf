@@ -48,18 +48,19 @@ impl Drop for Scratch {
     }
 }
 
-/// Write a monolithic file whose single image uses `location`.
+/// Write a header file whose single image uses `location`.
+///
+/// A header file rather than a monolithic one, because every caller of this
+/// uses an external `path(...)` or `url(...)` locator and "External XISF data
+/// blocks shall not occur in a monolithic XISF file". The path-containment
+/// and resolver rules these tests exercise apply to the distributed form,
+/// which is the only place such a locator is legal in the first place.
 fn unit_with(scratch: &Scratch, name: &str, location: &str) -> PathBuf {
     let xml = format!(
         r#"<xisf version="1.0"><Image geometry="4:1:1" sampleFormat="UInt8" location="{location}"/></xisf>"#
     );
-    let mut bytes = Vec::from(*b"XISF0100");
-    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&[0u8; 4]);
-    bytes.extend_from_slice(xml.as_bytes());
-
     let path = scratch.join(name);
-    std::fs::write(&path, bytes).expect("write");
+    std::fs::write(&path, xml.as_bytes()).expect("write");
     path
 }
 
@@ -81,13 +82,10 @@ fn a_symlinked_locator_cannot_escape_the_directory() {
     std::os::unix::fs::symlink(scratch.join("secret.txt"), scratch.join("unit/blocks.xisb"))
         .unwrap();
 
+    // A header file: an external locator is only legal in a distributed unit.
     let xml = r#"<xisf version="1.0"><Image geometry="4:1:1" sampleFormat="UInt8" location="path(blocks.xisb)"/></xisf>"#;
-    let mut bytes = Vec::from(*b"XISF0100");
-    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&[0u8; 4]);
-    bytes.extend_from_slice(xml.as_bytes());
-    let path = scratch.join("unit/unit.xisf");
-    std::fs::write(&path, bytes).unwrap();
+    let path = scratch.join("unit/unit.xish");
+    std::fs::write(&path, xml.as_bytes()).unwrap();
 
     let err = block_of(&path).expect_err("a symlink out of the directory was followed");
     assert_eq!(err.kind(), ErrorKind::BadAttribute);

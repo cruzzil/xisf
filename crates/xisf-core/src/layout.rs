@@ -10,10 +10,27 @@ pub const SIGNATURE: &[u8; 8] = b"XISF0100";
 pub const PREAMBLE_LEN: usize = 16;
 
 /// Where the header is, and where the data after it begins.
+/// Which of the two forms the specification defines a file is.
+///
+/// The distinction is not cosmetic: it decides which data block locations are
+/// legal. "Attached XISF data blocks shall not occur in a distributed XISF
+/// unit", and "External XISF data blocks shall not occur in a monolithic XISF
+/// file" -- so a reader that does not know which it is holding cannot enforce
+/// either rule.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Form {
+    /// A `.xisf`: signature, header and the blocks it addresses, in one file.
+    Monolithic,
+    /// A `.xish`: the header alone, with its blocks in separate files.
+    HeaderFile,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Layout {
     /// Byte range of the XML header within the file.
     pub header: (usize, usize),
+    /// Which form the file takes.
+    pub form: Form,
 }
 
 impl Layout {
@@ -36,7 +53,7 @@ impl Layout {
 /// them, so the form is decided by looking rather than by trusting a suffix.
 pub fn scan(bytes: &[u8]) -> Result<Layout> {
     if !bytes.starts_with(SIGNATURE) && looks_like_xml(bytes) {
-        return Ok(Layout { header: (0, bytes.len()) });
+        return Ok(Layout { header: (0, bytes.len()), form: Form::HeaderFile });
     }
     if bytes.len() < PREAMBLE_LEN {
         return Err(err!(
@@ -79,7 +96,7 @@ pub fn scan(bytes: &[u8]) -> Result<Layout> {
         ));
     }
 
-    Ok(Layout { header: (PREAMBLE_LEN, end) })
+    Ok(Layout { header: (PREAMBLE_LEN, end), form: Form::Monolithic })
 }
 
 /// The header's XML text.
@@ -118,6 +135,7 @@ mod tests {
         let bytes = file_with("<xisf/>");
         let layout = scan(&bytes).unwrap();
         assert_eq!(layout.header, (16, 23));
+        assert_eq!(layout.form, Form::Monolithic);
         assert_eq!(header_str(&bytes, &layout).unwrap(), "<xisf/>");
         assert_eq!(layout.data_start(), 23);
     }
