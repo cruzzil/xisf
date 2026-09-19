@@ -1,0 +1,62 @@
+on:
+  push:
+    branches: [main]
+  pull_request:
+name: Coverage
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate code coverage
+        run: |
+          # Remove artifacts that would otherwise skew the result.
+          cargo llvm-cov clean --workspace
+
+          # The test suites, across the whole workspace.
+          cargo llvm-cov --workspace --no-report
+
+          # The library compiles differently without its optional codecs, and
+          # those arms are unreachable in the default build, so they are only
+          # ever covered by a run that turns them off.
+          cargo llvm-cov --no-report -p xisf-core --no-default-features
+          cargo llvm-cov --no-report -p xisf-core --no-default-features --features zlib
+          cargo llvm-cov --no-report -p xisf-core --no-default-features --features lz4
+
+          # xisftool's own paths: argument handling, each subcommand, and the
+          # error paths. Integration tests drive the binary as a subprocess,
+          # which llvm-cov does not attribute back, so it is run directly here.
+          sample=corpus/pixinsight/Sample_F32_ZlibCompression_Sha256Security.xisf
+          cargo llvm-cov run --no-report --bin xisftool -- --help
+          cargo llvm-cov run --no-report --bin xisftool -- --version
+          cargo llvm-cov run --no-report --bin xisftool -- info "$sample"
+          cargo llvm-cov run --no-report --bin xisftool -- info -v "$sample"
+          cargo llvm-cov run --no-report --bin xisftool -- header "$sample" > /dev/null
+          cargo llvm-cov run --no-report --bin xisftool -- verify -v "$sample"
+          cargo llvm-cov run --no-report --bin xisftool -- dump "$sample" > /dev/null
+          # Exits non-zero on purpose: a usage error and an unreadable file.
+          cargo llvm-cov run --no-report --bin xisftool -- nosuchcommand || true
+          cargo llvm-cov run --no-report --bin xisftool -- info /dev/null || true
+
+          # The writer, exercised over as much of the header as it can emit.
+          cargo llvm-cov run --no-report -p xisf-core --example write-showcase -- showcase.xisf
+          cargo llvm-cov run --no-report --bin xisftool -- info -v showcase.xisf
+
+          cargo llvm-cov report --lcov --output-path lcov.info
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: cruzzil/xisf
+          files: lcov.info
+          fail_ci_if_error: false

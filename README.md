@@ -1,5 +1,12 @@
 # xisf-rs
 
+[![Crates.io](https://img.shields.io/crates/v/xisf.svg)](https://crates.io/crates/xisf)
+[![CI](https://github.com/cruzzil/xisf/actions/workflows/ci.yml/badge.svg)](https://github.com/cruzzil/xisf/actions/workflows/ci.yml)
+[![Documentation](https://docs.rs/xisf/badge.svg)](https://docs.rs/xisf/)
+[![codecov](https://codecov.io/gh/cruzzil/xisf/graph/badge.svg)](https://codecov.io/gh/cruzzil/xisf)
+[![Dependency status](https://deps.rs/repo/github/cruzzil/xisf/status.svg)](https://deps.rs/repo/github/cruzzil/xisf)
+[![MSRV](https://img.shields.io/badge/MSRV-1.90-blue)](https://blog.rust-lang.org/)
+
 A Rust implementation of [XISF](https://pixinsight.com/xisf/), the Extensible
 Image Serialization Format: an XML header naming images and properties,
 followed by the binary blocks that hold them. It is PixInsight's native format

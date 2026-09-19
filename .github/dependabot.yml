@@ -1,0 +1,27 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: daily
+    # No ignore rule for patch and minor updates here, deliberately.
+    #
+    # The usual advice is that they do not matter for a library, because
+    # consumers resolve their own dependencies and a library's lockfile never
+    # reaches them. That reasoning does not apply to this workspace: xisftool
+    # is a binary, whose users get exactly the versions the lockfile pins, and
+    # the lockfile is committed so that the MSRV job and the six-platform CI
+    # test one known set. Both of those are only worth having if something
+    # keeps the set current.
+
+  # The fuzzing crate is outside the workspace -- it needs nightly and a
+  # sanitizer -- so its manifest is not covered by the entry above.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
