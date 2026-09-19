@@ -5,7 +5,7 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
-## [Unreleased]
+## [0.4.0] — 2026-09-19
 
 Brings the implementation up to Revision 1 of the XISF 1.0 specification
 (version 1.01, September 2026). The format version is unchanged and Revision 1

@@ -80,10 +80,14 @@ fn a_checksum_on_the_data_element_is_honoured() {
 }
 
 /// A `<Data>` element's compression describes the parent's block too.
+///
+/// Zstandard rather than zlib, so this runs in every build: Revision 1 makes
+/// it a standard codec and this crate compiles it in unconditionally, while
+/// zlib remains a feature a consumer may turn off.
 #[test]
 fn compression_on_the_data_element_is_honoured() {
     let reader = Reader::from_bytes(unit(
-        r#"<Property id="S" type="String" location="embedded"><Data encoding="base64" compression="zlib:3">eJxzdHIGAAGNAMc=</Data></Property>"#,
+        r#"<Property id="S" type="String" location="embedded"><Data encoding="base64" compression="zstd:3">KLUv/SQDGQAAQUJDmO7PTw==</Data></Property>"#,
     ))
     .expect("header");
     let data = &by_id(&reader, "S").data;
