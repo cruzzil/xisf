@@ -25,7 +25,7 @@ xisf = { path = "crates/xisf", version = "0.4.0" }
 quick-xml = "0.38"
 base64 = "0.22"
 flate2 = "1"
-lz4_flex = "0.11"
+lz4_flex = "0.14"
 # Zstandard, both directions. Pure Rust rather than the `zstd` crate's C
 # bindings: that keeps the whole workspace free of a C toolchain, which matters
 # for the six-platform CI and lets Miri run. `simd` is left off for the same
