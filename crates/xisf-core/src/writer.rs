@@ -289,6 +289,20 @@ impl Writer {
 
     /// Add an image, checking that its data matches the geometry it declares.
     pub fn add_image(&mut self, pending: PendingImage) -> Result<()> {
+        // Revision 1: "The id attribute of an Image core element must be
+        // unique within the XISF unit." An id is how a caller asks for one
+        // image out of several, so a duplicate does not merely break a rule --
+        // it makes the question "which image is `Light`?" unanswerable, and
+        // the writer is the last place that can still refuse to pose it.
+        if let Some(id) = &pending.image.id
+            && self.images.iter().any(|existing| existing.image.id.as_ref() == Some(id))
+        {
+            return Err(err!(
+                InvalidArgument,
+                "two images share the id {id:?}, which must be unique within the unit"
+            ));
+        }
+
         let expected = pending
             .image
             .data_size()
@@ -543,7 +557,7 @@ impl Writer {
                 xml.push_str(&format!(" id=\"{}\"", escape_attr(id)));
             }
             if let Some(kind) = &image.image_type {
-                xml.push_str(&format!(" imageType=\"{}\"", escape_attr(kind)));
+                xml.push_str(&format!(" imageType=\"{}\"", escape_attr(kind.name())));
             }
             if let Some(uuid) = &image.uuid {
                 xml.push_str(&format!(" uuid=\"{}\"", escape_attr(uuid)));
@@ -580,11 +594,27 @@ impl Writer {
                 ));
             }
             if let Some(space) = &pending.rgb_working_space {
+                // Revision 1: "Encoders shall compute luminance coefficients
+                // in this way." They follow from the chromaticities and the
+                // D50 reference white, so writing whatever a caller happened
+                // to put in the struct would produce a header that contradicts
+                // itself. A set of primaries with no solution is not a valid
+                // working space, and is refused rather than written.
+                let luminance =
+                    RgbWorkingSpace::derive_luminance(space.x, space.y).ok_or_else(|| {
+                        err!(
+                            InvalidArgument,
+                            "the RGB working space primaries x={:?} y={:?} are degenerate, \
+                             so no luminance coefficients follow from them",
+                            space.x,
+                            space.y
+                        )
+                    })?;
                 xml.push_str(&format!(
                     "<RGBWorkingSpace x=\"{}\" y=\"{}\" Y=\"{}\" gamma=\"{}\"",
                     join_numbers(&space.x),
                     join_numbers(&space.y),
-                    join_numbers(&space.luminance),
+                    join_numbers(&luminance),
                     match space.gamma {
                         Gamma::Srgb => "sRGB".to_string(),
                         Gamma::Exponent(exponent) => exponent.to_string(),

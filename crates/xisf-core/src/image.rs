@@ -131,6 +131,86 @@ impl PixelStorage {
     }
 }
 
+/// The `imageType` attribute: what the image is for.
+///
+/// Revision 1's schema fixes this as a closed set, but an unrecognized value
+/// is kept rather than refused. It is metadata: it says what an image is for,
+/// not how to decode it, so losing an image over a word nobody recognizes
+/// would trade real pixels for a nicety. This follows [`crate::block::Codec`],
+/// which keeps an unknown codec by name for the same reason.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ImageType {
+    Bias,
+    Dark,
+    Flat,
+    Light,
+    MasterBias,
+    MasterDark,
+    MasterFlat,
+    MasterLight,
+    DefectMap,
+    RejectionMapHigh,
+    RejectionMapLow,
+    BinaryRejectionMapHigh,
+    BinaryRejectionMapLow,
+    /// Values proportional to the *angle* of fitted lines, 0 to 90 degrees --
+    /// Revision 1 corrects this from "proportional to the slope", whose upper
+    /// bound would have represented an infinite slope.
+    SlopeMap,
+    WeightMap,
+    /// A value the specification does not define, kept as written.
+    Other(String),
+}
+
+impl ImageType {
+    pub fn parse(name: &str) -> Self {
+        match name {
+            "Bias" => ImageType::Bias,
+            "Dark" => ImageType::Dark,
+            "Flat" => ImageType::Flat,
+            "Light" => ImageType::Light,
+            "MasterBias" => ImageType::MasterBias,
+            "MasterDark" => ImageType::MasterDark,
+            "MasterFlat" => ImageType::MasterFlat,
+            "MasterLight" => ImageType::MasterLight,
+            "DefectMap" => ImageType::DefectMap,
+            "RejectionMapHigh" => ImageType::RejectionMapHigh,
+            "RejectionMapLow" => ImageType::RejectionMapLow,
+            "BinaryRejectionMapHigh" => ImageType::BinaryRejectionMapHigh,
+            "BinaryRejectionMapLow" => ImageType::BinaryRejectionMapLow,
+            "SlopeMap" => ImageType::SlopeMap,
+            "WeightMap" => ImageType::WeightMap,
+            other => ImageType::Other(other.to_string()),
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            ImageType::Bias => "Bias",
+            ImageType::Dark => "Dark",
+            ImageType::Flat => "Flat",
+            ImageType::Light => "Light",
+            ImageType::MasterBias => "MasterBias",
+            ImageType::MasterDark => "MasterDark",
+            ImageType::MasterFlat => "MasterFlat",
+            ImageType::MasterLight => "MasterLight",
+            ImageType::DefectMap => "DefectMap",
+            ImageType::RejectionMapHigh => "RejectionMapHigh",
+            ImageType::RejectionMapLow => "RejectionMapLow",
+            ImageType::BinaryRejectionMapHigh => "BinaryRejectionMapHigh",
+            ImageType::BinaryRejectionMapLow => "BinaryRejectionMapLow",
+            ImageType::SlopeMap => "SlopeMap",
+            ImageType::WeightMap => "WeightMap",
+            ImageType::Other(name) => name,
+        }
+    }
+
+    /// Whether this is one of the values the specification defines.
+    pub fn is_standard(&self) -> bool {
+        !matches!(self, ImageType::Other(_))
+    }
+}
+
 /// The `bounds` attribute: the range floating-point samples are scaled to.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Bounds {
@@ -154,7 +234,7 @@ pub struct Image {
     pub bounds: Option<Bounds>,
     pub id: Option<String>,
     pub uuid: Option<String>,
-    pub image_type: Option<String>,
+    pub image_type: Option<ImageType>,
     /// A pedestal added to every sample, which must be subtracted to get
     /// zero-based values. The spec's default is zero.
     ///
@@ -265,7 +345,7 @@ impl Image {
             bounds,
             id: element.attr("id").map(str::to_owned),
             uuid: element.attr("uuid").map(str::to_owned),
-            image_type: element.attr("imageType").map(str::to_owned),
+            image_type: element.attr("imageType").map(ImageType::parse),
             offset: match element.attr("offset") {
                 None => None,
                 Some(text) => Some(parse_offset(text)?),
@@ -486,16 +566,103 @@ pub struct RgbWorkingSpace {
     pub name: Option<String>,
 }
 
+/// The CIE XYZ tristimulus values of the D50 reference white.
+///
+/// Revision 1: "all RGB working space parameters shall be relative to the
+/// standard D50 reference white", citing ASTM E308-01. These are that
+/// standard's values, and they are what reproduces the specification's own
+/// sRGB example to every digit it prints.
+pub const D50_WHITE: [f64; 3] = [0.96422, 1.0, 0.82521];
+
 impl RgbWorkingSpace {
+    /// The luminance coefficients implied by a set of primary chromaticities.
+    ///
+    /// Revision 1 makes these no longer free parameters: they follow from the
+    /// chromaticities and the reference white, "through the condition that
+    /// the linear RGB white point is transformed to the reference white".
+    /// Each primary contributes a column of CIE XYZ values at unit luminance,
+    /// and the coefficients are the scale factors that carry those columns
+    /// onto the white point -- the solution of `M s = w`, where `s` is what
+    /// comes back here because every column has `Y = 1`.
+    ///
+    /// `None` when the system is singular, which Revision 1 says "does not
+    /// define a valid RGB working space" -- three primaries that are collinear
+    /// in the chromaticity diagram enclose no gamut at all.
+    pub fn derive_luminance(x: [f64; 3], y: [f64; 3]) -> Option<[f64; 3]> {
+        // Column i is the primary's XYZ at Y = 1.
+        let mut m = [[0.0f64; 3]; 3];
+        for i in 0..3 {
+            if y[i] == 0.0 {
+                return None;
+            }
+            m[0][i] = x[i] / y[i];
+            m[1][i] = 1.0;
+            m[2][i] = (1.0 - x[i] - y[i]) / y[i];
+        }
+
+        let det = |m: &[[f64; 3]; 3]| -> f64 {
+            m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+        };
+
+        let base = det(&m);
+        if !base.is_finite() || base.abs() < 1e-12 {
+            return None;
+        }
+
+        // Cramer's rule: replace each column with the white point in turn.
+        let mut out = [0.0f64; 3];
+        for (k, slot) in out.iter_mut().enumerate() {
+            let mut replaced = m;
+            for (row, w) in replaced.iter_mut().zip(D50_WHITE) {
+                row[k] = w;
+            }
+            *slot = det(&replaced) / base;
+        }
+        out.iter().all(|v| v.is_finite()).then_some(out)
+    }
+
+    /// Whether the serialized luminance coefficients match the ones its
+    /// chromaticities imply.
+    ///
+    /// Revision 1 says a decoder *may* verify this, not that it must, so this
+    /// is offered rather than enforced: a file whose `Y` is slightly off is
+    /// still readable, and refusing it would lose an image over a rounding
+    /// difference in somebody else's encoder. The tolerance is loose enough
+    /// for values written to six decimal places, which is what the
+    /// specification's own examples use.
+    pub fn luminance_is_consistent(&self) -> bool {
+        match Self::derive_luminance(self.x, self.y) {
+            None => false,
+            Some(derived) => derived.iter().zip(self.luminance).all(|(a, b)| (a - b).abs() <= 1e-5),
+        }
+    }
+
+    /// An RGB working space from its gamma and primaries.
+    ///
+    /// The luminance coefficients are not a parameter: Revision 1 derives
+    /// them from the chromaticities and the D50 reference white, so this
+    /// computes them rather than asking for them. `None` for primaries that
+    /// do not define a valid space.
+    pub fn new(gamma: Gamma, x: [f64; 3], y: [f64; 3], name: Option<String>) -> Option<Self> {
+        Some(RgbWorkingSpace { gamma, x, y, luminance: Self::derive_luminance(x, y)?, name })
+    }
+
     /// The sRGB space, which applies when an image declares none.
     pub fn srgb() -> Self {
-        RgbWorkingSpace {
-            gamma: Gamma::Srgb,
-            x: [0.648431, 0.321152, 0.155886],
-            y: [0.330856, 0.597871, 0.066044],
-            luminance: [0.222491, 0.716888, 0.060621],
-            name: Some("sRGB IEC61966-2.1".into()),
-        }
+        // The chromaticities are the specification's; the luminance
+        // coefficients are derived from them rather than copied, so this
+        // constant satisfies the derivation Revision 1 requires by
+        // construction and cannot drift from it. They agree with the printed
+        // 0.222491:0.716888:0.060621 to every digit the specification gives.
+        Self::new(
+            Gamma::Srgb,
+            [0.648431, 0.321152, 0.155886],
+            [0.330856, 0.597871, 0.066044],
+            Some("sRGB IEC61966-2.1".into()),
+        )
+        .expect("the sRGB primaries define a valid working space")
     }
 
     /// Parse an `<RGBWorkingSpace>` element.
@@ -755,6 +922,49 @@ pub fn parse_thumbnail(element: &Element) -> Result<Image> {
 
 #[cfg(test)]
 mod tests {
+    /// The specification's own sRGB example is the reference: if the
+    /// derivation reproduces the Y it prints, the formula and the reference
+    /// white are both right.
+    #[test]
+    fn the_derivation_reproduces_the_specifications_srgb_example() {
+        let derived = RgbWorkingSpace::derive_luminance(
+            [0.648431, 0.321152, 0.155886],
+            [0.330856, 0.597871, 0.066044],
+        )
+        .expect("sRGB primaries are not degenerate");
+        for (got, want) in derived.iter().zip([0.222491, 0.716888, 0.060621]) {
+            assert!(
+                (got - want).abs() < 5e-7,
+                "derived {derived:?}, spec says 0.222491:0.716888:0.060621"
+            );
+        }
+    }
+
+    /// The constant the crate hands out for "no RGBWorkingSpace declared"
+    /// must itself satisfy the derivation Revision 1 now requires.
+    #[test]
+    fn the_built_in_srgb_space_is_self_consistent() {
+        assert!(RgbWorkingSpace::srgb().luminance_is_consistent());
+    }
+
+    /// Collinear primaries enclose no gamut, and Revision 1 says such a set
+    /// "does not define a valid RGB working space".
+    #[test]
+    fn degenerate_primaries_have_no_luminance_coefficients() {
+        assert!(RgbWorkingSpace::derive_luminance([0.3, 0.3, 0.3], [0.3, 0.3, 0.3]).is_none());
+        assert!(RgbWorkingSpace::derive_luminance([0.3, 0.4, 0.5], [0.0, 0.4, 0.5]).is_none());
+    }
+
+    /// Coefficients that do not follow from the chromaticities are reported
+    /// as inconsistent -- which decoders *may* check, so it is offered rather
+    /// than enforced.
+    #[test]
+    fn inconsistent_luminance_is_detected() {
+        let mut space = RgbWorkingSpace::srgb();
+        space.luminance = [0.3, 0.4, 0.3];
+        assert!(!space.luminance_is_consistent());
+    }
+
     use super::*;
     use crate::header;
 

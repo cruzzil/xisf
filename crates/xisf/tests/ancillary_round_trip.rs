@@ -37,13 +37,17 @@ fn every_ancillary_element_survives_a_round_trip() {
     let thumb_pixels: Vec<u8> = vec![1, 2, 3, 4];
     let profile: Vec<u8> = (0..64u8).collect();
 
-    let space = RgbWorkingSpace {
-        gamma: Gamma::Exponent(2.2),
-        x: [0.648431, 0.230154, 0.155886],
-        y: [0.330856, 0.701572, 0.066044],
-        luminance: [0.311114, 0.625662, 0.063224],
-        name: Some("Adobe RGB (1998)".into()),
-    };
+    // The luminance coefficients are derived rather than given: Revision 1
+    // makes them follow from the chromaticities and the D50 reference white,
+    // so `new` computes them and a round trip compares derived against
+    // derived rather than against a rounded literal.
+    let space = RgbWorkingSpace::new(
+        Gamma::Exponent(2.2),
+        [0.648431, 0.230154, 0.155886],
+        [0.330856, 0.701572, 0.066044],
+        Some("Adobe RGB (1998)".into()),
+    )
+    .expect("Adobe RGB primaries define a valid space");
     let function = DisplayFunction {
         midtones: [0.25, 0.25, 0.25, 0.5],
         shadows: [0.01, 0.02, 0.03, 0.0],
@@ -302,7 +306,7 @@ fn image_attributes_survive_a_round_trip() {
     source.orientation = Some(xisf::Orientation { rotation: -90, flip_horizontal: true });
     source.uuid = Some("c5c93b6d-9072-4e85-9548-1a5391377683".into());
     source.id = Some("light_0001".into());
-    source.image_type = Some("Light".into());
+    source.image_type = Some(xisf_core::image::ImageType::Light);
 
     let mut writer = Writer::new();
     writer

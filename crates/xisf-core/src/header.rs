@@ -125,6 +125,29 @@ impl Header {
 }
 
 impl Header {
+    /// Image `id` values the header uses more than once.
+    ///
+    /// Revision 1 requires an image id to be unique within the unit. This
+    /// reports rather than refuses: a duplicate makes "which image is this?"
+    /// ambiguous, but the pixels are all still there and readable by index,
+    /// so throwing the file away would lose more than it protects. The writer
+    /// refuses to *produce* one, which is where the obligation really sits.
+    pub fn duplicate_image_ids(&self) -> Vec<&str> {
+        let mut seen: Vec<&str> = Vec::new();
+        let mut duplicated: Vec<&str> = Vec::new();
+        for image in self.images() {
+            let Some(id) = image.attr("id") else { continue };
+            if seen.contains(&id) {
+                if !duplicated.contains(&id) {
+                    duplicated.push(id);
+                }
+            } else {
+                seen.push(id);
+            }
+        }
+        duplicated
+    }
+
     /// The element with a given `uid`, if the header defines one.
     pub fn by_uid(&self, uid: &str) -> Option<&Element> {
         self.root.descendants().into_iter().find(|e| e.is_core() && e.attr("uid") == Some(uid))

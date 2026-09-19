@@ -159,3 +159,94 @@ fn the_embedded_location_carries_its_encoding() {
         Some(Location::Embedded { encoding: TextEncoding::Hex })
     );
 }
+
+/// "Besides NaN, +Inf and -Inf, plain text serializations of floating point
+/// values can represent non-finite values with the alternative forms nan,
+/// -nan, inf and -inf, which decoders must accept."
+///
+/// All eight forms happen to be accepted by Rust's own float parser, which is
+/// what the property path uses -- so this pins the behaviour against a future
+/// change that tightens it.
+#[test]
+fn every_spelling_of_a_non_finite_float_is_accepted() {
+    use xisf_core::property::Property;
+
+    for (text, finite) in [
+        ("NaN", false),
+        ("nan", false),
+        ("-nan", false),
+        ("+Inf", false),
+        ("-Inf", false),
+        ("inf", false),
+        ("-inf", false),
+        ("1.5", true),
+    ] {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Property id="V" type="Float64" value="{text}"/>"#
+        )))
+        .expect("header");
+        let property = Property::parse(by_id(&reader, "V")).expect("parse");
+        let value = property.value().unwrap_or_else(|| panic!("{text:?} was rejected"));
+        match value {
+            xisf_core::property::ScalarValue::Float(v) => {
+                assert_eq!(v.is_finite(), finite, "{text:?} parsed as {v}");
+            }
+            other => panic!("{text:?} gave {other:?}"),
+        }
+    }
+}
+
+/// "Plain text serializations of Boolean values use the words true and false,
+/// and decoders also accept the integers 1 and 0."
+#[test]
+fn boolean_properties_accept_words_and_integers() {
+    use xisf_core::property::{Property, ScalarValue};
+
+    for (text, expected) in [("true", true), ("false", false), ("1", true), ("0", false)] {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Property id="B" type="Boolean" value="{text}"/>"#
+        )))
+        .expect("header");
+        let property = Property::parse(by_id(&reader, "B")).expect("parse");
+        assert_eq!(
+            property.value(),
+            Some(ScalarValue::Bool(expected)),
+            "{text:?} did not read as {expected}"
+        );
+    }
+}
+
+/// "The id attribute of an Image core element must be unique within the XISF
+/// unit." Reported rather than refused, since the pixels remain readable.
+#[test]
+fn duplicate_image_ids_are_reported() {
+    let reader = Reader::from_bytes(unit(
+        r#"<Image id="Light" geometry="1:1:1" sampleFormat="UInt8" location="attachment:200:1"/><Image id="Light" geometry="1:1:1" sampleFormat="UInt8" location="attachment:201:1"/><Image id="Dark" geometry="1:1:1" sampleFormat="UInt8" location="attachment:202:1"/>"#,
+    ))
+    .expect("header");
+    assert_eq!(reader.header().duplicate_image_ids(), vec!["Light"]);
+}
+
+/// The `imageType` values Revision 1's schema fixes are recognised, and one it
+/// does not define is kept rather than costing the image.
+#[test]
+fn image_types_are_recognised_and_unknown_ones_preserved() {
+    use xisf_core::image::{Image, ImageType};
+
+    for (text, expected) in [
+        ("Light", ImageType::Light),
+        ("MasterFlat", ImageType::MasterFlat),
+        ("SlopeMap", ImageType::SlopeMap),
+        ("WeightMap", ImageType::WeightMap),
+        ("BinaryRejectionMapLow", ImageType::BinaryRejectionMapLow),
+        ("SomethingNew", ImageType::Other("SomethingNew".into())),
+    ] {
+        let reader = Reader::from_bytes(unit(&format!(
+            r#"<Image imageType="{text}" geometry="1:1:1" sampleFormat="UInt8" location="attachment:200:1"/>"#
+        )))
+        .expect("header");
+        let image = Image::parse(reader.header().images()[0]).expect("parse");
+        assert_eq!(image.image_type.as_ref(), Some(&expected), "{text}");
+        assert_eq!(image.image_type.unwrap().name(), text, "{text} did not round-trip its name");
+    }
+}
