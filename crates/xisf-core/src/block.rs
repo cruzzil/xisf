@@ -439,11 +439,8 @@ impl Checksum {
                 digest.len()
             ));
         }
-        let bytes = (0..digest.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&digest[i..i + 2], 16))
-            .collect::<core::result::Result<Vec<u8>, _>>()
-            .map_err(|_| err!(BadAttribute, "checksum digest is not hexadecimal"))?;
+        let bytes = decode_hex(digest.as_bytes())
+            .ok_or_else(|| err!(BadAttribute, "checksum digest is not hexadecimal"))?;
 
         Ok(Checksum { algorithm, digest: bytes })
     }
@@ -461,6 +458,40 @@ fn parse_block_id(text: &str) -> Result<u64> {
     }
     u64::from_str_radix(digits, radix)
         .map_err(|_| err!(BadAttribute, "{text:?} is not a block identifier"))
+}
+
+/// The value of one hexadecimal digit.
+///
+/// Both cases are accepted although the specification says a digest "shall be
+/// encoded in Base16 using the lowercase hexadecimal digits": this is the read
+/// path, and refusing a file over the case of a digit it is about to verify
+/// anyway helps nobody. The writer emits lowercase.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decode an even-length run of hexadecimal digits.
+///
+/// Operates on bytes rather than on `&str`. Slicing a `&str` at `i..i + 2`
+/// assumes every character is one byte wide, and *panics* rather than erroring
+/// when one is not -- which a header is free to contain, so the panic was
+/// reachable from any file. A non-ASCII byte is not a hex digit, so it is
+/// rejected here the way any other non-digit is.
+pub(crate) fn decode_hex(digits: &[u8]) -> Option<Vec<u8>> {
+    if !digits.len().is_multiple_of(2) {
+        return None;
+    }
+    digits
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| Some(hex_digit(pair[0])? << 4 | hex_digit(pair[1])?))
+        .collect()
 }
 
 fn parse_u64(text: &str, what: &str) -> Result<u64> {

@@ -588,3 +588,52 @@ compression="zlib:4" subblocks="{subblocks}" location="inline:base64">AAAAAA==</
         exercise(&bytes);
     }
 }
+
+/// A hexadecimal field whose length in *bytes* is right but which contains a
+/// character wider than one byte.
+///
+/// Found by the fuzzer. Both decoders sliced the string two bytes at a time,
+/// which assumes every character is one byte wide -- and slicing a `&str` off
+/// a character boundary panics rather than erroring, so any file could abort
+/// the process by putting a multi-byte character where a digit belongs. A
+/// panic on untrusted input is a denial of service in a parser whose whole
+/// job is untrusted input.
+#[test]
+fn a_multi_byte_character_among_hex_digits_is_an_error_not_a_panic() {
+    use xisf_core::block::Checksum;
+
+    // U+FEFF is three bytes wide, so 21 of them plus one ASCII digit is
+    // exactly the 64 bytes a sha-256 digest needs and nothing like 64 digits.
+    let digest = "\u{feff}".repeat(21) + "a";
+    assert_eq!(digest.len(), 64, "the length check must pass for this to be a test");
+    let err = Checksum::parse(&format!("sha-256:{digest}")).expect_err("accepted");
+    assert_eq!(err.kind(), ErrorKind::BadAttribute);
+
+    // The same shape reaching the inline hex block decoder.
+    let xml = format!(
+        r#"<xisf version="1.0"><Metadata/><Property id="H" type="String" location="inline:hex">{}</Property></xisf>"#,
+        "\u{feff}".repeat(2)
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+
+    let reader = Reader::from_bytes(bytes).expect("the header itself is well formed");
+    let property = reader
+        .header()
+        .root
+        .descendants()
+        .into_iter()
+        .find(|e| e.attr("id") == Some("H"))
+        .expect("the property");
+    assert_eq!(reader.block(&property.data).unwrap_err().kind(), ErrorKind::BadAttribute);
+
+    // And every ordinary digest must still decode, in either case.
+    let lower = "d60477d1c651b6bc42a8aa938a6132006257d76f229a2d7481db84d23dea8b96";
+    assert_eq!(Checksum::parse(&format!("sha-256:{lower}")).expect("lower").digest.len(), 32);
+    assert_eq!(
+        Checksum::parse(&format!("sha-256:{}", lower.to_uppercase())).expect("upper").digest[0],
+        0xd6
+    );
+}

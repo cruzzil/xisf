@@ -621,11 +621,11 @@ fn decode_text(text: &str, encoding: TextEncoding) -> Result<Vec<u8>> {
             if !compact.len().is_multiple_of(2) {
                 return Err(err!(BadAttribute, "hex data has an odd number of digits"));
             }
-            (0..compact.len())
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&compact[i..i + 2], 16))
-                .collect::<core::result::Result<Vec<u8>, _>>()
-                .map_err(|e| err!(BadAttribute, "hex: {e}"))
+            // Decoded from bytes: slicing the string two bytes at a time
+            // assumed every character was one byte wide and panicked when one
+            // was not, which a header is free to contain.
+            crate::block::decode_hex(compact.as_bytes())
+                .ok_or_else(|| err!(BadAttribute, "hex data is not hexadecimal"))
         }
     }
 }

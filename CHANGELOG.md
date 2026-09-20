@@ -7,6 +7,22 @@ needs a breaking change the others do not.
 
 ## [Unreleased]
 
+### Security
+
+- **A panic on untrusted input, in two hexadecimal decoders.** Both sliced a
+  `&str` two bytes at a time, which assumes every character is one byte wide;
+  slicing off a character boundary panics rather than erroring, so any file
+  could abort the process by putting a multi-byte character where a hex digit
+  belongs. The length checks passed because they count *bytes*: 21 copies of
+  U+FEFF plus one digit is exactly the 64 bytes a SHA-256 digest needs.
+
+  It reached a `checksum` attribute and an `inline:hex` data block, so both a
+  header and a block could trigger it. A panic is a denial of service in a
+  parser whose entire job is untrusted input.
+
+  Found by the fuzzing harness added in 0.3.0, on its first real catch. Both
+  decoders now work on bytes.
+
 ### Changed
 
 - **Dependencies updated**: quick-xml 0.38 → 0.42, base64 0.22 → 0.23,
