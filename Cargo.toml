@@ -23,7 +23,7 @@ xisf-core = { path = "crates/xisf-core", version = "0.5.0" }
 xisf = { path = "crates/xisf", version = "0.5.0" }
 
 quick-xml = "0.38"
-base64 = "0.22"
+base64 = "0.23"
 flate2 = "1"
 lz4_flex = "0.11"
 # Zstandard, both directions. Pure Rust rather than the `zstd` crate's C
