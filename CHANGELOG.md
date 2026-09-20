@@ -5,6 +5,32 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
+## [Unreleased]
+
+### Changed
+
+- **Dependencies updated**: quick-xml 0.38 → 0.42, base64 0.22 → 0.23,
+  lz4_flex 0.11 → 0.14, sha1 0.10 → 0.11, sha2 0.10 → 0.11, sha3 0.10 → 0.12,
+  seiza-xisf 0.2.0 → 0.2.1. quick-xml 0.42 hands back text already decoded, so
+  five `from_utf8` calls and their error arms are gone from the header parser;
+  attribute values now go through XML attribute-value normalization rather
+  than bare unescaping.
+
+  The corpus tests verify blocks against digests PixInsight recorded years
+  ago, so those passing is direct evidence the hashes still compute what they
+  used to across a major version.
+
+### Fixed
+
+- The `bounds` requirement added in 0.5.0 was not applied to the libXISF
+  round-trip fixture or the throughput benchmark, neither of which runs under
+  `cargo test` — the first only in CI, the second not at all.
+- The astrometry test fixtures leaked their dynamically built property names,
+  which Miri correctly flagged.
+- Five compression-heavy tests are excluded from Miri, which they had pushed
+  past its 45-minute budget, and two floating point tests that Miri's
+  deliberate imprecision made meaningless under it.
+
 ## [0.5.0] — 2026-09-20
 
 A conformance audit against Revision 1, section by section, and the fixes it
