@@ -5,7 +5,7 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
-## [Unreleased]
+## [0.5.0] — 2026-09-20
 
 A conformance audit against Revision 1, section by section, and the fixes it
 produced. The defects cluster in the revision's own Corrections list, which is
@@ -81,9 +81,6 @@ Almost every item below produced a wrong answer rather than an error.
   have passed the entire suite while scrambling every large shuffled block.
   Chromatic L\*a\*b\* values are now pinned against `colour-science`, since
   every previous colour test was invariant under swapping `a` and `b`.
-
-### Added
-
 - **Colour space transformations (Annex B).** `xisf_core::color` implements
   the transformations between RGB, CIE XYZ and CIE L*a*b*, and the
   colorimetric grayscale component, relative to an image's own RGB working
@@ -105,7 +102,7 @@ Almost every item below produced a wrong answer rather than an error.
   specification renders every equation as an SVG of glyph outlines and none of
   the mathematics was recoverable from the document as text.
 
-### Fixed
+### Fixed — astrometric evaluation
 
 - **`BasisFunction::VariableOrder` had a minimum order of 2; it is 3.** Table
   17 is explicit, and the distinction matters: "a kernel of this family with

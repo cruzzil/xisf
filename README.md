@@ -29,7 +29,7 @@ PixInsight Class Library; see [`docs/PLAN.md`](docs/PLAN.md) for the reasoning.
 
 ```toml
 [dependencies]
-xisf = "0.4"
+xisf = "0.5"
 ```
 
 ```rust
