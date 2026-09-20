@@ -382,6 +382,10 @@ fn two_fields_of_a_structure_may_not_share_an_identifier() {
 ///
 /// Nothing else in the suite covers both at once: the subblock test uses no
 /// shuffling, and the shuffling tests use no subblocks.
+/// Not run under Miri: zlib compression of a kilobyte is quick natively and
+/// slow under interpretation, and what this checks is an ordering rather than
+/// a memory-safety property.
+#[cfg_attr(miri, ignore)]
 #[cfg(feature = "zlib")]
 #[test]
 fn shuffling_spans_the_whole_block_rather_than_each_subblock() {
@@ -440,6 +444,10 @@ fn shuffling_spans_the_whole_block_rather_than_each_subblock() {
 /// uncompressed inline blocks, and no corpus file is big-endian. Swapping the
 /// compressed bytes instead would return every sample byte-reversed, which for
 /// a Float32 turns 1.0 into 4.6e-41.
+/// Not run under Miri: zlib compression of a kilobyte is quick natively and
+/// slow under interpretation, and what this checks is an ordering rather than
+/// a memory-safety property.
+#[cfg_attr(miri, ignore)]
 #[cfg(feature = "zlib")]
 #[test]
 fn a_big_endian_block_is_swapped_after_it_is_decompressed_and_unshuffled() {

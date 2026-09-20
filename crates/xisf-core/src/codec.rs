@@ -314,6 +314,11 @@ mod tests {
     /// Producing exactly one byte more than was declared is the proof that
     /// the decoder stopped where it was told to: had it run to completion it
     /// would report the stream's real length instead.
+    /// Not run under Miri: it compresses eight megabytes, which is quick
+    /// natively and not under interpretation. What it checks is a resource
+    /// bound rather than a memory-safety property, so interpreting it buys
+    /// nothing the native run does not already give.
+    #[cfg_attr(miri, ignore)]
     #[cfg(feature = "zlib")]
     #[test]
     fn a_stream_that_outgrows_its_declaration_stops_at_the_declaration() {
@@ -352,6 +357,11 @@ mod tests {
     /// region is an ordinary thing to find in an astronomical image. A
     /// ceiling tight enough for DEFLATE rejects those, so this pins that the
     /// per-codec bound does not.
+    /// Not run under Miri: it compresses eight megabytes, which is quick
+    /// natively and not under interpretation. What it checks is a resource
+    /// bound rather than a memory-safety property, so interpreting it buys
+    /// nothing the native run does not already give.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn a_highly_compressible_zstd_block_is_not_mistaken_for_a_bomb() {
         let plain = vec![0u8; 8 << 20];
@@ -371,6 +381,11 @@ mod tests {
 
     /// The bound must not reject legitimate files. A small block that really
     /// does expand a long way is normal -- a run of zeroes, say.
+    /// Not run under Miri: it compresses eight megabytes, which is quick
+    /// natively and not under interpretation. What it checks is a resource
+    /// bound rather than a memory-safety property, so interpreting it buys
+    /// nothing the native run does not already give.
+    #[cfg_attr(miri, ignore)]
     #[cfg(feature = "zlib")]
     #[test]
     fn a_genuinely_compressible_block_still_decodes() {
