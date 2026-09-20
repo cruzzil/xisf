@@ -22,7 +22,7 @@ authors = ["The xisf-rs Developers"]
 xisf-core = { path = "crates/xisf-core", version = "0.5.0" }
 xisf = { path = "crates/xisf", version = "0.5.0" }
 
-quick-xml = "0.41"
+quick-xml = "0.42"
 base64 = "0.23"
 flate2 = "1"
 lz4_flex = "0.14"
