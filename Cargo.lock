@@ -326,15 +326,6 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "lz4_flex"
-version = "0.11.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
-dependencies = [
- "twox-hash",
-]
-
-[[package]]
-name = "lz4_flex"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
@@ -518,7 +509,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d972a8c14605b1ddd171c964f07522350c30efbe0a917f21f0e357844c6099c"
 dependencies = [
  "flate2",
- "lz4_flex 0.14.0",
+ "lz4_flex",
  "quick-xml 0.41.0",
  "seiza-fits",
  "sha1 0.11.0",
@@ -749,7 +740,7 @@ version = "0.5.0"
 dependencies = [
  "base64",
  "flate2",
- "lz4_flex 0.11.6",
+ "lz4_flex",
  "memmap2",
  "quick-xml 0.38.4",
  "sha1 0.10.7",
