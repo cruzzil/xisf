@@ -5,7 +5,10 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
-## [Unreleased]
+## [0.5.1] — 2026-09-20
+
+A security fix, plus the dependency and CI work that followed 0.5.0. The
+`xisf = "0.5"` requirement in Cargo.toml already covers this release.
 
 ### Security
 

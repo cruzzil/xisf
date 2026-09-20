@@ -266,7 +266,7 @@ checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
 name = "libxisf"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "xisf-core",
 ]
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "xisf"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "divan",
  "seiza-xisf",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "xisf-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64",
  "flate2",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "xisftool"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "xisf",
 ]
