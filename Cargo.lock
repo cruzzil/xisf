@@ -521,7 +521,7 @@ dependencies = [
  "lz4_flex 0.14.0",
  "quick-xml 0.41.0",
  "seiza-fits",
- "sha1 0.11.0",
+ "sha1",
  "sha2 0.11.0",
  "tempfile",
  "thiserror",
@@ -556,17 +556,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
-]
-
-[[package]]
-name = "sha1"
-version = "0.10.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -752,7 +741,7 @@ dependencies = [
  "lz4_flex 0.11.6",
  "memmap2",
  "quick-xml 0.38.4",
- "sha1 0.10.7",
+ "sha1",
  "sha2 0.10.9",
  "sha3",
  "zrip",
