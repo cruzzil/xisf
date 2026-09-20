@@ -163,15 +163,21 @@ mod tests {
         // With xi = 2 and eta = 3 every monomial has a distinct value, so the
         // sequence identifies the ordering unambiguously.
         monomials(2.0, 3.0, 4, &mut out);
-        assert_eq!(
-            out,
-            vec![
-                1.0, // 1
-                2.0, 3.0, // xi, eta
-                4.0, 6.0, 9.0, // xi^2, xi*eta, eta^2
-                8.0, 12.0, 18.0, 27.0, // xi^3, xi^2*eta, xi*eta^2, eta^3
-            ]
-        );
+        let expected = [
+            1.0, // 1
+            2.0, 3.0, // xi, eta
+            4.0, 6.0, 9.0, // xi^2, xi*eta, eta^2
+            8.0, 12.0, 18.0, 27.0, // xi^3, xi^2*eta, xi*eta^2, eta^3
+        ];
+        assert_eq!(out.len(), expected.len());
+        // Compared with a tolerance rather than for equality. What this test
+        // is about is the *order*, and these ten values are far enough apart
+        // that any tolerance below one identifies the sequence uniquely --
+        // whereas `powi` is not required to be exactly rounded, and under Miri
+        // it deliberately is not.
+        for (got, want) in out.iter().zip(expected) {
+            assert!((got - want).abs() < 1e-9, "got {out:?}, wanted {expected:?}");
+        }
         assert_eq!(out.len(), polynomial_terms(4, true));
     }
 

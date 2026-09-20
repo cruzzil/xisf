@@ -11,7 +11,10 @@ use xisf_core::astrometry::{
 ///
 /// The vector and matrix values are inline base64 of little-endian f64s, which
 /// is what the real thing uses for small arrays.
-fn with_solution(properties: &[(&str, &str)], vectors: &[(&str, &str, &[f64])]) -> Vec<u8> {
+fn with_solution(
+    properties: &[(String, String)],
+    vectors: &[(String, String, Vec<f64>)],
+) -> Vec<u8> {
     let mut body = String::new();
     for (id, value) in properties {
         body.push_str(&format!(
@@ -20,10 +23,10 @@ fn with_solution(properties: &[(&str, &str)], vectors: &[(&str, &str, &[f64])]) 
     }
     for (id, kind, values) in vectors {
         let mut raw = Vec::new();
-        for v in *values {
+        for v in values {
             raw.extend_from_slice(&v.to_le_bytes());
         }
-        let shape = if *kind == "F64Matrix" {
+        let shape = if kind == "F64Matrix" {
             let columns = 2.max(values.len() / 2);
             let columns = if values.len() == 4 {
                 2
@@ -70,29 +73,31 @@ fn base64(raw: &[u8]) -> String {
 }
 
 /// A solution's scalar properties: identifier and value.
-type Scalars = Vec<(&'static str, &'static str)>;
+type Scalars = Vec<(String, String)>;
 /// A solution's array properties: identifier, XISF type, and values.
-type Arrays = Vec<(&'static str, &'static str, Vec<f64>)>;
+type Arrays = Vec<(String, String, Vec<f64>)>;
 
 /// The minimum a valid solution needs: layer 1 and nothing else.
 fn layer_one() -> (Scalars, Arrays) {
     (
-        vec![("Version", "1.0"), ("ProjectionSystem", "Gnomonic")],
+        vec![("Version".into(), "1.0".into()), ("ProjectionSystem".into(), "Gnomonic".into())],
         vec![
-            ("ReferenceCelestialCoordinates", "F64Vector", vec![10.684, 41.269]),
-            ("ReferenceImageCoordinates", "F64Vector", vec![8.0, 8.0]),
-            ("LinearTransformationMatrix", "F64Matrix", vec![-0.0005, 0.0, 0.0, 0.0005]),
+            ("ReferenceCelestialCoordinates".into(), "F64Vector".into(), vec![10.684, 41.269]),
+            ("ReferenceImageCoordinates".into(), "F64Vector".into(), vec![8.0, 8.0]),
+            (
+                "LinearTransformationMatrix".into(),
+                "F64Matrix".into(),
+                vec![-0.0005, 0.0, 0.0, 0.0005],
+            ),
         ],
     )
 }
 
 fn read(
-    properties: &[(&str, &str)],
-    vectors: &[(&str, &str, Vec<f64>)],
+    properties: &[(String, String)],
+    vectors: &[(String, String, Vec<f64>)],
 ) -> xisf_core::Result<Option<astrometry::Solution>> {
-    let vectors: Vec<(&str, &str, &[f64])> =
-        vectors.iter().map(|(a, b, c)| (*a, *b, c.as_slice())).collect();
-    let bytes = with_solution(properties, &vectors);
+    let bytes = with_solution(properties, vectors);
     let reader = Reader::from_bytes(bytes).expect("header");
     let image = reader.header().images()[0];
     astrometry::read(&reader, image)
@@ -101,8 +106,8 @@ fn read(
 /// As [`read`], plus the `Local:*:NodeOffsets` property, which is an
 /// `I32Vector` and so cannot go through the `f64` array helper.
 fn read_with_offsets(
-    properties: &[(&str, &str)],
-    vectors: &[(&str, &str, Vec<f64>)],
+    properties: &[(String, String)],
+    vectors: &[(String, String, Vec<f64>)],
     offsets: &[i32],
 ) -> Option<astrometry::Solution> {
     let mut body = String::new();
@@ -191,7 +196,7 @@ fn the_first_layer_is_enough_for_a_valid_solution() {
 #[test]
 fn an_unknown_projection_system_makes_the_whole_solution_unavailable() {
     let (mut props, vecs) = layer_one();
-    props[1] = ("ProjectionSystem", "Fisheye");
+    props[1] = ("ProjectionSystem".into(), "Fisheye".into());
     let err = read(&props, &vecs).expect_err("an unknown projection was accepted");
     assert_eq!(err.kind(), xisf_core::ErrorKind::Unsupported);
     assert!(err.message().contains("whole solution unavailable"), "{}", err.message());
@@ -202,7 +207,7 @@ fn an_unknown_projection_system_makes_the_whole_solution_unavailable() {
 #[test]
 fn an_unsupported_major_revision_is_not_interpreted_at_all() {
     let (mut props, vecs) = layer_one();
-    props[0] = ("Version", "2.0");
+    props[0] = ("Version".into(), "2.0".into());
     let err = read(&props, &vecs).expect_err("a future major revision was interpreted");
     assert_eq!(err.kind(), xisf_core::ErrorKind::Unsupported);
 
@@ -217,20 +222,21 @@ fn an_unsupported_major_revision_is_not_interpreted_at_all() {
 #[test]
 fn an_unknown_basis_function_costs_only_the_distortion_layer() {
     let (mut props, mut vecs) = layer_one();
-    props.push(("DistortionModel:ImageToProjection:BasisFunction", "MysteryKernel"));
-    props.push(("DistortionModel:ImageToProjection:Order", "2"));
-    props.push(("DistortionModel:ImageToProjection:Terms", "Global"));
-    props.push(("DistortionModel:ProjectionToImage:BasisFunction", "ThinPlateSpline"));
-    props.push(("DistortionModel:ProjectionToImage:Order", "2"));
-    props.push(("DistortionModel:ProjectionToImage:Terms", "Global"));
+    props.push(("DistortionModel:ImageToProjection:BasisFunction".into(), "MysteryKernel".into()));
+    props.push(("DistortionModel:ImageToProjection:Order".into(), "2".into()));
+    props.push(("DistortionModel:ImageToProjection:Terms".into(), "Global".into()));
+    props
+        .push(("DistortionModel:ProjectionToImage:BasisFunction".into(), "ThinPlateSpline".into()));
+    props.push(("DistortionModel:ProjectionToImage:Order".into(), "2".into()));
+    props.push(("DistortionModel:ProjectionToImage:Terms".into(), "Global".into()));
     vecs.push((
-        "ProjectiveTransformation:ImageToProjection",
-        "F64Matrix",
+        "ProjectiveTransformation:ImageToProjection".into(),
+        "F64Matrix".into(),
         vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
     ));
     vecs.push((
-        "ProjectiveTransformation:ProjectionToImage",
-        "F64Matrix",
+        "ProjectiveTransformation:ProjectionToImage".into(),
+        "F64Matrix".into(),
         vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
     ));
 
@@ -251,8 +257,8 @@ fn an_unknown_basis_function_costs_only_the_distortion_layer() {
 fn half_a_projective_transformation_is_refused() {
     let (props, mut vecs) = layer_one();
     vecs.push((
-        "ProjectiveTransformation:ImageToProjection",
-        "F64Matrix",
+        "ProjectiveTransformation:ImageToProjection".into(),
+        "F64Matrix".into(),
         vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
     ));
     let err = read(&props, &vecs).expect_err("one direction alone was accepted");
@@ -264,7 +270,7 @@ fn half_a_projective_transformation_is_refused() {
 #[test]
 fn an_unknown_reference_system_costs_nothing() {
     let (mut props, vecs) = layer_one();
-    props.push(("CelestialReferenceSystem", "FK5"));
+    props.push(("CelestialReferenceSystem".into(), "FK5".into()));
     let solution = read(&props, &vecs).expect("read").expect("a solution");
     assert_eq!(
         solution.projection.celestial_reference_system,
@@ -351,9 +357,9 @@ fn versions_parse_and_order() {
 #[test]
 fn provenance_is_read_when_present() {
     let (mut props, vecs) = layer_one();
-    props.push(("Catalog", "Gaia DR3"));
-    props.push(("CreatorApplication", "SomeSolver 1.2"));
-    props.push(("CreatorOS", "Linux"));
+    props.push(("Catalog".into(), "Gaia DR3".into()));
+    props.push(("CreatorApplication".into(), "SomeSolver 1.2".into()));
+    props.push(("CreatorOS".into(), "Linux".into()));
     let solution = read(&props, &vecs).expect("read").expect("a solution");
     assert_eq!(solution.provenance.catalog.as_deref(), Some("Gaia DR3"));
     assert_eq!(solution.provenance.creator_application.as_deref(), Some("SomeSolver 1.2"));
@@ -437,7 +443,7 @@ fn every_projection_evaluates_at_the_reference_point() {
         "HammerAitoff",
     ] {
         let (mut props, vecs) = layer_one();
-        props[1] = ("ProjectionSystem", name);
+        props[1] = ("ProjectionSystem".into(), name.into());
         let solution = read(&props, &vecs).expect("read").expect("a solution");
 
         let [ra, dec] = solution
@@ -459,36 +465,35 @@ fn a_distortion_model_is_loaded_and_changes_the_result() {
     let (mut props, mut vecs) = layer_one();
 
     for which in ["ImageToProjection", "ProjectionToImage"] {
-        props.push((
-            Box::leak(format!("DistortionModel:{which}:BasisFunction").into_boxed_str()),
-            "ThinPlateSpline",
-        ));
-        props.push((Box::leak(format!("DistortionModel:{which}:Order").into_boxed_str()), "2"));
-        props
-            .push((Box::leak(format!("DistortionModel:{which}:Terms").into_boxed_str()), "Global"));
+        props.push((format!("DistortionModel:{which}:BasisFunction"), "ThinPlateSpline".into()));
+        props.push((format!("DistortionModel:{which}:Order"), "2".into()));
+        props.push((format!("DistortionModel:{which}:Terms"), "Global".into()));
         // A Global term with no nodes and a first-degree polynomial: the
         // residual is the constant 0.001 in u and 0.002 in v, which is small
         // enough to be a plausible distortion and large enough to see.
-        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:X:Normalization")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:X:Normalization"),
+            "F64Vector".into(),
             vec![0.0, 0.0, 1.0],
         ));
-        vecs.push((leak(format!("DistortionModel:{which}:Global:X:Nodes")), "F64Matrix", vec![]));
+        vecs.push((format!("DistortionModel:{which}:Global:X:Nodes"), "F64Matrix".into(), vec![]));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:X:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:X:Coefficients"),
+            "F64Vector".into(),
             vec![0.001, 0.0, 0.0],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:Y:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:Y:Coefficients"),
+            "F64Vector".into(),
             vec![0.002, 0.0, 0.0],
         ));
     }
-    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
-    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+    vecs.push((
+        "ProjectiveTransformation:ImageToProjection".into(),
+        "F64Matrix".into(),
+        identity.clone(),
+    ));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage".into(), "F64Matrix".into(), identity));
 
     let solution = read(&props, &vecs).expect("read").expect("a solution");
 
@@ -513,30 +518,33 @@ fn a_mismatched_coefficient_count_costs_the_distortion_layer() {
     let identity = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
     let (mut props, mut vecs) = layer_one();
     for which in ["ImageToProjection", "ProjectionToImage"] {
-        let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
-        props.push((leak(format!("DistortionModel:{which}:BasisFunction")), "ThinPlateSpline"));
-        props.push((leak(format!("DistortionModel:{which}:Order")), "2"));
-        props.push((leak(format!("DistortionModel:{which}:Terms")), "Global"));
+        props.push((format!("DistortionModel:{which}:BasisFunction"), "ThinPlateSpline".into()));
+        props.push((format!("DistortionModel:{which}:Order"), "2".into()));
+        props.push((format!("DistortionModel:{which}:Terms"), "Global".into()));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:X:Normalization")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:X:Normalization"),
+            "F64Vector".into(),
             vec![0.0, 0.0, 1.0],
         ));
-        vecs.push((leak(format!("DistortionModel:{which}:Global:X:Nodes")), "F64Matrix", vec![]));
+        vecs.push((format!("DistortionModel:{which}:Global:X:Nodes"), "F64Matrix".into(), vec![]));
         // Order 2 with a polynomial part needs three coefficients; this has two.
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:X:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:X:Coefficients"),
+            "F64Vector".into(),
             vec![0.001, 0.0],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Global:Y:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Global:Y:Coefficients"),
+            "F64Vector".into(),
             vec![0.002, 0.0],
         ));
     }
-    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
-    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+    vecs.push((
+        "ProjectiveTransformation:ImageToProjection".into(),
+        "F64Matrix".into(),
+        identity.clone(),
+    ));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage".into(), "F64Matrix".into(), identity));
 
     let solution = read(&props, &vecs).expect("read").expect("a solution");
     assert!(solution.distortion.is_none(), "a malformed model was kept");
@@ -556,7 +564,6 @@ fn a_mismatched_coefficient_count_costs_the_distortion_layer() {
 fn local_terms_are_unpacked_by_their_node_offsets() {
     let identity = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
     let (mut props, mut vecs) = layer_one();
-    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
 
     // Three Local terms with different node counts -- 2, 0 and 1 -- so a
     // uniform stride cannot pass. Order 2 means Q = 3 polynomial coefficients
@@ -567,36 +574,36 @@ fn local_terms_are_unpacked_by_their_node_offsets() {
     let _ = &offsets;
 
     for which in ["ImageToProjection", "ProjectionToImage"] {
-        props.push((leak(format!("DistortionModel:{which}:BasisFunction")), "ThinPlateSpline"));
-        props.push((leak(format!("DistortionModel:{which}:Order")), "2"));
-        props.push((leak(format!("DistortionModel:{which}:Terms")), "Local"));
+        props.push((format!("DistortionModel:{which}:BasisFunction"), "ThinPlateSpline".into()));
+        props.push((format!("DistortionModel:{which}:Order"), "2".into()));
+        props.push((format!("DistortionModel:{which}:Terms"), "Local".into()));
 
         // Far apart, with small radii, so exactly one term covers each centre.
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:Center")),
-            "F64Matrix",
+            format!("DistortionModel:{which}:Local:Center"),
+            "F64Matrix".into(),
             vec![0.0, 0.0, 1000.0, 0.0, 0.0, 1000.0],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:Radius")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Local:Radius"),
+            "F64Vector".into(),
             vec![10.0, 10.0, 10.0],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:X:Normalization")),
-            "F64Matrix",
+            format!("DistortionModel:{which}:Local:X:Normalization"),
+            "F64Matrix".into(),
             vec![0.0, 0.0, 1.0, 1000.0, 0.0, 1.0, 0.0, 1000.0, 1.0],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:X:Nodes")),
-            "F64Matrix",
+            format!("DistortionModel:{which}:Local:X:Nodes"),
+            "F64Matrix".into(),
             nodes.clone(),
         ));
         // Coefficients: per term, (radial for its nodes) then (1, 0, 0) scaled
         // so the constant is the term number.
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:X:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Local:X:Coefficients"),
+            "F64Vector".into(),
             vec![
                 0.0, 0.0, 1.0, 0.0, 0.0, // term 0: 2 nodes + constant 1
                 2.0, 0.0, 0.0, // term 1: 0 nodes + constant 2
@@ -604,8 +611,8 @@ fn local_terms_are_unpacked_by_their_node_offsets() {
             ],
         ));
         vecs.push((
-            leak(format!("DistortionModel:{which}:Local:Y:Coefficients")),
-            "F64Vector",
+            format!("DistortionModel:{which}:Local:Y:Coefficients"),
+            "F64Vector".into(),
             vec![
                 0.0, 0.0, 10.0, 0.0, 0.0, //
                 20.0, 0.0, 0.0, //
@@ -613,8 +620,12 @@ fn local_terms_are_unpacked_by_their_node_offsets() {
             ],
         ));
     }
-    vecs.push(("ProjectiveTransformation:ImageToProjection", "F64Matrix", identity.clone()));
-    vecs.push(("ProjectiveTransformation:ProjectionToImage", "F64Matrix", identity));
+    vecs.push((
+        "ProjectiveTransformation:ImageToProjection".into(),
+        "F64Matrix".into(),
+        identity.clone(),
+    ));
+    vecs.push(("ProjectiveTransformation:ProjectionToImage".into(), "F64Matrix".into(), identity));
 
     // The node offsets are an I32Vector, which the array helper cannot build,
     // so this fixture is assembled by hand below.

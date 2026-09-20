@@ -448,6 +448,11 @@ mod tests {
     /// boundary, where the inverse is arccos of a value at 1 and loses about
     /// half its significant digits. This pins what the point actually
     /// achieves, so that a future change that makes it worse is visible.
+    /// Not run under Miri, which deliberately perturbs floating point maths to
+    /// catch code that relies on exact results. This test measures how much
+    /// precision is lost at a singularity, so a deliberately imprecise
+    /// interpreter has nothing to say about it.
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn the_orthographic_limb_is_singular_but_bounded() {
         let system = ProjectionSystem::Orthographic;
