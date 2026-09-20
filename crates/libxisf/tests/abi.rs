@@ -51,20 +51,36 @@ fn manifest_dir() -> PathBuf {
 /// cdylib, so this asks cargo for it first. Without that a stale library can
 /// be linked and the gate reports on code that is no longer there.
 fn library_dir() -> Option<PathBuf> {
-    let status = Command::new(env!("CARGO"))
-        .args(["build", "-p", "libxisf", "--lib"])
-        .current_dir(manifest_dir())
-        .status()
-        .ok()?;
-    if !status.success() {
-        return None;
-    }
-
     // target/<profile>/, found by walking up from the test executable.
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
     if dir.ends_with("deps") {
         dir = dir.parent()?;
+    }
+
+    // Build into the same target directory this test binary came out of,
+    // rather than into the default one. They are not always the same: under
+    // `cargo llvm-cov` the tests are built into target/llvm-cov-target, so a
+    // plain `cargo build` puts the cdylib somewhere this function is not
+    // looking and the link fails with "cannot find -lxisf" -- which is how
+    // the coverage job failed while `cargo test` passed.
+    let target_dir = dir.parent()?;
+    let profile = dir.file_name()?.to_str()?;
+
+    let mut command = Command::new(env!("CARGO"));
+    command.args(["build", "-p", "libxisf", "--lib"]);
+    command.arg("--target-dir").arg(target_dir);
+    if profile == "release" {
+        command.arg("--release");
+    }
+    // Inherited RUSTFLAGS from the coverage harness would make this a
+    // different build unit and rebuild the world; the cdylib only has to link.
+    command.env_remove("RUSTFLAGS");
+    command.env_remove("CARGO_ENCODED_RUSTFLAGS");
+
+    let status = command.current_dir(manifest_dir()).status().ok()?;
+    if !status.success() {
+        return None;
     }
     Some(dir.to_path_buf())
 }
