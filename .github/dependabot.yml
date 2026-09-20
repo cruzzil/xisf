@@ -4,6 +4,14 @@ updates:
     directory: /
     schedule:
       interval: daily
+    ignore:
+      # `dtolnay/rust-toolchain@1.90.0` does not name a version of the action.
+      # That tag *is* the Rust toolchain it installs, pinned to this crate's
+      # minimum supported version, and Dependabot reads it as an ordinary
+      # semver tag: it proposed 1.120.0, which is not a Rust release and which
+      # would have quietly turned the MSRV job into a check against something
+      # else entirely. The pin moves when the MSRV moves, by hand.
+      - dependency-name: dtolnay/rust-toolchain
 
   - package-ecosystem: cargo
     directory: /
@@ -21,7 +29,16 @@ updates:
 
   # The fuzzing crate is outside the workspace -- it needs nightly and a
   # sanitizer -- so its manifest is not covered by the entry above.
+  #
+  # Direct dependencies only, which in practice means libfuzzer-sys. Everything
+  # else in fuzz/Cargo.lock arrives transitively through the path dependency on
+  # xisf-core, and bumping those here would resolve the fuzzers against
+  # different versions of quick-xml, base64 and the hashes than CI tests --
+  # which is the opposite of what a fuzzer is for. They move when the
+  # workspace's own lockfile moves.
   - package-ecosystem: cargo
     directory: /fuzz
     schedule:
       interval: weekly
+    allow:
+      - dependency-type: direct
