@@ -10,7 +10,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust
         run: rustup update stable
       - uses: Swatinem/rust-cache@v2
@@ -54,7 +54,7 @@ jobs:
           cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage reports to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: cruzzil/xisf

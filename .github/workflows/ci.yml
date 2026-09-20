@@ -36,7 +36,7 @@ jobs:
         if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # The windows-11-arm image ships no Rust toolchain.
       - name: Install rustup (Windows ARM64)
@@ -86,7 +86,7 @@ jobs:
   round-trip:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -144,7 +144,7 @@ jobs:
     # hour under interpretation.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-fuzz
@@ -195,7 +195,7 @@ jobs:
           done
       - name: Keep whatever it found
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts
           path: fuzz/artifacts/
@@ -211,7 +211,7 @@ jobs:
   schema:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install xmllint
@@ -228,7 +228,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -254,7 +254,7 @@ jobs:
   features:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: No optional features
@@ -277,7 +277,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Update every dependency to the newest compatible version
         run: cargo update --verbose
@@ -289,7 +289,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.90.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace --all-targets
