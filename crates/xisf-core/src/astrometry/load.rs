@@ -79,7 +79,7 @@ impl Blocks<'_> {
     }
 
     fn pairs(&self, key: &str) -> Result<Option<Vec<[f64; 2]>>> {
-        Ok(self.f64s(key)?.map(|v| v.chunks_exact(2).map(|c| [c[0], c[1]]).collect()))
+        Ok(self.f64s(key)?.map(|v| v.as_chunks::<2>().0.to_vec()))
     }
 }
 

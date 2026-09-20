@@ -472,6 +472,6 @@ fn a_big_endian_block_is_swapped_after_it_is_decompressed_and_unshuffled() {
     // uncompressed ones -- not to the compressed stream.
     assert_eq!(ByteOrder::Big.is_native(), cfg!(target_endian = "big"));
     let decoded: Vec<u32> =
-        plain.chunks_exact(4).map(|c| u32::from_be_bytes(c.try_into().unwrap())).collect();
+        plain.as_chunks::<4>().0.iter().map(|c| u32::from_be_bytes(*c)).collect();
     assert_eq!(decoded, values, "the samples did not survive the three stages");
 }
