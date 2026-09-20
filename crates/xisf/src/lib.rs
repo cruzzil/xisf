@@ -230,6 +230,25 @@ impl<'a> ImageRef<'a> {
         self.image.bounds
     }
 
+    /// The range the image's samples actually span, declared or implied.
+    ///
+    /// [`ImageRef::bounds`] answers what the file *says*; this answers what a
+    /// reader should use. "If the bounds attribute is not specified for an
+    /// integer image, then its representable range shall be [0, 2^k - 1],
+    /// where k is the number of bits per pixel sample", and a floating point
+    /// real image has no default -- which is why it must declare one.
+    ///
+    /// `None` means there is no range to use: either a complex image, whose
+    /// representable range the specification leaves "formally undefined", or a
+    /// floating point image in a file that failed to declare the `bounds` it
+    /// was required to. Either way, guessing is what this exists to stop:
+    /// assuming `[0, 1]` for a `UInt16` image clips everything above one to
+    /// white, and assuming `[0, 65535]` for a normalized float image makes the
+    /// whole frame black.
+    pub fn representable_range(&self) -> Option<Bounds> {
+        self.image.bounds.or_else(|| self.image.sample_format.default_bounds())
+    }
+
     /// The parsed `<Image>` attributes.
     pub fn attributes(&self) -> &Image {
         &self.image

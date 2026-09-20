@@ -237,3 +237,54 @@ fn colour_transforms_use_the_images_own_working_space() {
         assert!((got - want).abs() < 1e-9, "round trip gave {back:?}");
     }
 }
+
+/// "If the bounds attribute is not specified for an integer image, then its
+/// representable range shall be [0, 2^k - 1], where k is the number of bits
+/// per pixel sample."
+///
+/// A reader that assumes [0, 1] for a UInt16 image clips everything above one
+/// to white; one that assumes [0, 65535] for a normalized float image makes
+/// the frame black. The default is the specification's, not a guess, and the
+/// cases where there is no default say so rather than inventing one.
+#[test]
+fn an_integer_image_has_the_representable_range_its_width_implies() {
+    use xisf::{Bounds, SampleFormat};
+
+    let range = |format: SampleFormat, declared: Option<&str>| {
+        let bounds = declared.map(|b| format!(r#" bounds="{b}""#)).unwrap_or_default();
+        let unit = write_unit_with(&format!(
+            r#"geometry="2:2:1" sampleFormat="{}"{bounds}"#,
+            format.name()
+        ));
+        let file = XisfFile::from_bytes(unit).expect("read");
+        file.images()[0].representable_range()
+    };
+
+    assert_eq!(range(SampleFormat::UInt8, None), Some(Bounds { low: 0.0, high: 255.0 }));
+    assert_eq!(range(SampleFormat::UInt16, None), Some(Bounds { low: 0.0, high: 65535.0 }));
+    assert_eq!(range(SampleFormat::UInt32, None), Some(Bounds { low: 0.0, high: 4294967295.0 }));
+
+    // A declared range overrides the default.
+    assert_eq!(range(SampleFormat::UInt16, Some("0:1")), Some(Bounds { low: 0.0, high: 1.0 }));
+
+    // A float image must declare one, so there is nothing to fall back to...
+    assert_eq!(range(SampleFormat::Float32, None), None);
+    assert_eq!(range(SampleFormat::Float32, Some("0:1")), Some(Bounds { low: 0.0, high: 1.0 }));
+
+    // ...and a complex image's range is "formally undefined".
+    assert_eq!(range(SampleFormat::Complex32, None), None);
+}
+
+/// Build a unit whose single image carries the given attributes verbatim.
+fn write_unit_with(attributes: &str) -> Vec<u8> {
+    let xml = format!(
+        r#"<xisf version="1.0" xmlns="http://www.pixinsight.com/xisf"><Metadata/><Image {attributes} location="attachment:4096:16"/></xisf>"#
+    );
+    let mut bytes = Vec::from(*b"XISF0100");
+    bytes.extend_from_slice(&(xml.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0u8; 4]);
+    bytes.extend_from_slice(xml.as_bytes());
+    bytes.resize(4096, 0);
+    bytes.extend_from_slice(&[0u8; 16]);
+    bytes
+}
