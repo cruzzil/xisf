@@ -505,8 +505,21 @@ fn element_from(
         let key_raw = core::str::from_utf8(attribute.key.as_ref())
             .map_err(|e| err!(BadHeader, "an attribute name is not UTF-8: {e}"))?;
         let key = key_raw.rsplit(':').next().unwrap_or(key_raw).to_string();
+        // Attribute-value normalization, not merely unescaping: XML folds a
+        // newline or a tab inside an attribute value to a space before the
+        // value is interpreted, and the unescaping call this replaces did not.
+        //
+        // No XISF attribute this changes the reading of -- the grammars that
+        // tolerate surrounding white space are trimmed at their own parsers,
+        // and the ones that do not, such as `geometry`, reject a space just as
+        // they rejected the newline. It is here because quick-xml deprecated
+        // the unescaping call in favour of this one, and because doing what
+        // XML says is the better default for whatever attribute is added next.
         let value = attribute
-            .unescape_value()
+            // XML 1.0: "A valid XISF header must begin with the following XML
+            // declaration: <?xml version="1.0" encoding="UTF-8"?>". The two
+            // 1.0 variants normalize identically; only 1.1 folds more.
+            .normalized_value(quick_xml::XmlVersion::Explicit1_0)
             .map_err(|e| err!(BadHeader, "in <{name}> attribute {key}: {e}"))?
             .into_owned();
 

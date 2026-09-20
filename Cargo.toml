@@ -22,19 +22,19 @@ authors = ["The xisf-rs Developers"]
 xisf-core = { path = "crates/xisf-core", version = "0.5.0" }
 xisf = { path = "crates/xisf", version = "0.5.0" }
 
-quick-xml = "0.38"
-base64 = "0.22"
+quick-xml = "0.41"
+base64 = "0.23"
 flate2 = "1"
-lz4_flex = "0.11"
+lz4_flex = "0.14"
 # Zstandard, both directions. Pure Rust rather than the `zstd` crate's C
 # bindings: that keeps the whole workspace free of a C toolchain, which matters
 # for the six-platform CI and lets Miri run. `simd` is left off for the same
 # reason -- it is a decoder feature, and the codebase stays interpretable
 # without it.
 zrip = { version = "0.8", default-features = false, features = ["std", "frame"] }
-sha1 = "0.10"
-sha2 = "0.10"
-sha3 = "0.10"
+sha1 = "0.11"
+sha2 = "0.11"
+sha3 = "0.12"
 memmap2 = "0.9"
 
 [workspace.lints.rust]
