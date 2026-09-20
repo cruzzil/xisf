@@ -20,7 +20,7 @@ xisf-core.workspace = true
 # A third, independent implementation, used only as a test oracle. Apache-2.0,
 # and a dev-dependency, so it is absent from what a consumer builds. Nothing
 # is copied from it.
-seiza-xisf = "0.2"
+seiza-xisf = "0.2.1"
 
 [[bench]]
 name = "throughput"

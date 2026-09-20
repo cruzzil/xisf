@@ -269,19 +269,15 @@ pub fn parse(xml: &str) -> Result<Header> {
             }
 
             Ok((_, Event::Text(text))) => {
-                // `decode` converts bytes to text; it does *not* resolve
-                // entities. Without unescaping, `&amp;` and `&lt;` are
-                // silently dropped rather than becoming `&` and `<`, which
-                // corrupts any character data containing them.
-                let raw = text.decode().map_err(|e| err!(BadHeader, "character data: {e}"))?;
-                push_text(&mut stack, &raw);
+                // Already text, and deliberately *not* unescaped: entity and
+                // character references arrive as their own events below, and
+                // unescaping here as well would resolve them twice.
+                push_text(&mut stack, &text.into_inner());
             }
             // Base64 and hex blocks are sometimes wrapped in CDATA; the
             // content means the same thing either way.
             Ok((_, Event::CData(data))) => {
-                let decoded = String::from_utf8(data.to_vec())
-                    .map_err(|e| err!(BadHeader, "CDATA is not UTF-8: {e}"))?;
-                push_text(&mut stack, &decoded);
+                push_text(&mut stack, &data.into_inner());
             }
             // An entity or character reference inside character data arrives
             // as its own event rather than as part of the surrounding text.
@@ -289,9 +285,8 @@ pub fn parse(xml: &str) -> Result<Header> {
             // `a &amp; b` would read back as `a  b` -- data loss that looks
             // like nothing at all went wrong.
             Ok((_, Event::GeneralRef(reference))) => {
-                let raw = core::str::from_utf8(&reference)
-                    .map_err(|e| err!(BadHeader, "entity reference: {e}"))?;
-                let resolved = resolve_entity(raw)
+                let raw = reference.into_inner();
+                let resolved = resolve_entity(&raw)
                     .ok_or_else(|| err!(BadHeader, "unknown entity reference &{raw};"))?;
                 push_text(&mut stack, &resolved);
             }
@@ -349,13 +344,8 @@ pub fn parse(xml: &str) -> Result<Header> {
 fn namespace_of(resolved: &ResolveResult<'_>) -> Result<Option<String>> {
     Ok(match resolved {
         ResolveResult::Unbound => None,
-        ResolveResult::Bound(ns) => Some(
-            core::str::from_utf8(ns.as_ref())
-                .map_err(|e| err!(BadHeader, "a namespace URI is not UTF-8: {e}"))?
-                .to_string(),
-        ),
+        ResolveResult::Bound(ns) => Some(ns.as_ref().to_string()),
         ResolveResult::Unknown(prefix) => {
-            let prefix = String::from_utf8_lossy(prefix);
             return Err(err!(BadHeader, "the namespace prefix {prefix:?} is not declared"));
         }
     })
@@ -483,10 +473,9 @@ fn element_from(
     budget: &mut usize,
 ) -> Result<Element> {
     let qname = start.name();
-    let raw = core::str::from_utf8(qname.as_ref())
-        .map_err(|e| err!(BadHeader, "an element name is not UTF-8: {e}"))?;
-    // Namespace prefixes carry no meaning the engine needs; the namespace is
-    // fixed by the spec and checked on the root.
+    let raw = qname.as_ref();
+    // The prefix carries no meaning the engine needs; what an element belongs
+    // to is decided by the resolved namespace, not by the spelling.
     let name = raw.rsplit(':').next().unwrap_or(raw).to_string();
 
     let mut attributes = Vec::new();
@@ -502,8 +491,7 @@ fn element_from(
             ));
         }
         let attribute = attribute.map_err(|e| err!(BadHeader, "in <{name}>: {e}"))?;
-        let key_raw = core::str::from_utf8(attribute.key.as_ref())
-            .map_err(|e| err!(BadHeader, "an attribute name is not UTF-8: {e}"))?;
+        let key_raw = attribute.key.as_ref();
         let key = key_raw.rsplit(':').next().unwrap_or(key_raw).to_string();
         // Attribute-value normalization, not merely unescaping: XML folds a
         // newline or a tab inside an attribute value to a space before the
