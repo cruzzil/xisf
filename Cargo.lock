@@ -457,9 +457,9 @@ dependencies = [
 
 [[package]]
 name = "seiza-xisf"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8bc46f350b99abb68c689aa947c6b805e22675fb69fe799572aa5e6d00b4eb0"
+checksum = "0c6d0eb3750a4d3c7e77cc482988b6ee27d2b6b7bc8ecf88650a89100ddc2fbb"
 dependencies = [
  "flate2",
  "lz4_flex",
@@ -467,6 +467,7 @@ dependencies = [
  "seiza-fits",
  "sha1",
  "sha2",
+ "sha3 0.11.0",
  "tempfile",
  "thiserror",
  "zstd",
@@ -522,6 +523,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
+]
+
+[[package]]
+name = "sha3"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
+dependencies = [
+ "digest",
+ "keccak",
 ]
 
 [[package]]
@@ -677,7 +688,7 @@ dependencies = [
  "quick-xml 0.42.0",
  "sha1",
  "sha2",
- "sha3",
+ "sha3 0.12.0",
  "zrip",
 ]
 
