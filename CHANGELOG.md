@@ -5,6 +5,38 @@ The four crates share a version so that a reader does not have to correlate
 four numbers to know what fits with what; they may diverge once one of them
 needs a breaking change the others do not.
 
+## [0.5.2] — 2026-10-18
+
+The minimum versions of two dependencies go up. No code or API changes, so
+`xisf = "0.5"` already covers this release; what changes is that a build can
+no longer resolve to the older versions.
+
+### Changed
+
+- **zrip now requires 0.8.11**, up from 0.8. Two fixes in that range are on
+  paths xisf uses:
+
+  - 0.8.9 fixed an encoder bug where a block that fell back to raw storage
+    left its Huffman table available to the next block, which could then
+    refer to a table the decoder never received: a zstd frame that no
+    decoder could read. The writer compresses through that encoder. 2,300
+    randomized round-trips through `zrip::compress` at level 3 against 0.8.8
+    did not trigger it, so there is no known file it corrupted; the floor is
+    there so it cannot happen.
+  - 0.8.11 fixed the decoder allocating up to twice a frame's declared size,
+    and 128 KiB for a frame of a few kilobytes, as each block reserved
+    128 KiB past its start. Every zstd block xisf reads takes that path.
+
+  A build that resolves fresh already gets 0.8.11. The floor protects a
+  lockfile left at 0.8.8, and `cargo install --locked xisftool`, which used
+  the lockfile shipped with 0.5.1.
+
+- **sha2 now requires 0.11.1**, which makes its AArch64 backend sound under
+  Stacked Borrows. Nothing xisf computes changes.
+
+- seiza-xisf, the test oracle, 0.2.1 → 0.4.0. A dev-dependency, so absent
+  from what a consumer builds.
+
 ## [0.5.1] — 2026-09-20
 
 A security fix, plus the dependency and CI work that followed 0.5.0. The

@@ -19,8 +19,8 @@ repository = "https://github.com/cruzzil/xisf"
 authors = ["The xisf-rs Developers"]
 
 [workspace.dependencies]
-xisf-core = { path = "crates/xisf-core", version = "0.5.1" }
-xisf = { path = "crates/xisf", version = "0.5.1" }
+xisf-core = { path = "crates/xisf-core", version = "0.5.2" }
+xisf = { path = "crates/xisf", version = "0.5.2" }
 
 quick-xml = "0.42"
 base64 = "0.23"
@@ -30,10 +30,12 @@ lz4_flex = "0.14"
 # bindings: that keeps the whole workspace free of a C toolchain, which matters
 # for the six-platform CI and lets Miri run. `simd` is left off for the same
 # reason -- it is a decoder feature, and the codebase stays interpretable
-# without it.
-zrip = { version = "0.8", default-features = false, features = ["std", "frame"] }
+# without it. The floor is 0.8.11 for two fixes the writer and reader both
+# run through: an encoder that could reuse a Huffman table the decoder never
+# saw (0.8.9), and a decoder that allocated up to twice a frame's size (0.8.11).
+zrip ={ version = "0.8.11", default-features = false, features = ["std", "frame"] }
 sha1 = "0.11"
-sha2 = "0.11"
+sha2 = "0.11.1"
 sha3 = "0.12"
 memmap2 = "0.9"
 
