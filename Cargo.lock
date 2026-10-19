@@ -455,9 +455,9 @@ dependencies = [
 
 [[package]]
 name = "seiza-xisf"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "035e6f264aba23ca99eb0c32046393b8811f82b2dbf00eedf1c3d65b6ef2cc40"
+checksum = "deb2f85239a996204ee9ea4f0f7c1ebf050a1dd878125e0b04bac1c98c9eaea3"
 dependencies = [
  "flate2",
  "lz4_flex",
